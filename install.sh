@@ -126,10 +126,16 @@ apt-get install -y \
 
 ok "System packages installed."
 
-# Free the RTL-SDR dongles from the kernel's DVB driver. Without this, the
-# dongles are claimed by the kernel and rtl_test/rtl_fm can't open them, so no
-# station ever tunes (the dongles appear "off").
-info "Blacklisting the DVB kernel driver (so rtl_fm/rtl_test can use the dongles)..."
+# Forcefully free the RTL-SDR dongles from anything that may be holding them:
+# a previous install's service, lingering rtl_* processes, or the kernel's DVB
+# driver. Essential when re-running the installer so the dongles can be
+# re-programmed and re-tuned cleanly.
+info "Stopping any previous pituner service and killing SDR processes..."
+systemctl stop pituner.service 2>/dev/null || true
+pkill -f 'rtl_fm|rtl_tcp|rtl_test|rtl_eeprom|rtl_biast|nrsc5' 2>/dev/null || true
+sleep 1
+
+info "Blacklisting and unloading the DVB kernel driver..."
 BLACKLIST_FILE="/etc/modprobe.d/rtl-sdr-blacklist.conf"
 cat > "${BLACKLIST_FILE}" <<'EOF'
 # Let rtl_fm/rtl_test own the RTL-SDR dongles instead of the DVB driver.
@@ -140,7 +146,7 @@ EOF
 for mod in dvb_usb_rtl28xxu rtl2832 rtl2830 dvb_usb_v2 dvb_core; do
   rmmod "$mod" 2>/dev/null || true
 done
-ok "DVB driver blacklisted and unloaded."
+ok "Dongles freed (service stopped, SDR processes killed, DVB driver unloaded)."
 
 # ------------------------------------------------------------- build demux
 step "2 of 8: Build FM stereo decoder (demux)"
