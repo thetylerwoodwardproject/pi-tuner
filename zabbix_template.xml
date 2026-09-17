@@ -1,0 +1,98 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<zabbix_export>
+    <version>5.0</version>
+    <date>2026-09-17T00:00:00Z</date>
+    <groups>
+        <group>
+            <name>Templates</name>
+        </group>
+    </groups>
+    <templates>
+        <template>
+            <template>Pi Tuner v2</template>
+            <name>Pi Tuner v2</name>
+            <description>Pi Tuner v2 SDR streaming appliance. Data is pushed by tuner.py on the Pi using the Zabbix trapper (zabbix_sender) protocol. Attach this template to the Zabbix host named to match HOSTNAME in zabbix.conf.</description>
+            <groups>
+                <group>
+                    <name>Templates</name>
+                </group>
+            </groups>
+            <items>
+                <item>
+                    <name>Pi Tuner event</name>
+                    <type>TRAP</type>
+                    <key>pituner.event</key>
+                    <delay>0</delay>
+                    <history>7d</history>
+                    <trends>0</trends>
+                    <status>ENABLED</status>
+                    <value_type>TEXT</value_type>
+                    <description>Last event pushed by the Pi Tuner (station started/down/recovered, serial not found, config errors).</description>
+                </item>
+                <item>
+                    <name>Pi Tuner status</name>
+                    <type>TRAP</type>
+                    <key>pituner.status</key>
+                    <delay>0</delay>
+                    <history>7d</history>
+                    <trends>0</trends>
+                    <status>ENABLED</status>
+                    <value_type>TEXT</value_type>
+                    <description>JSON snapshot of per-station status, e.g. {"station1":"streaming","station2":"down"}. Refreshed on every heartbeat and on status changes.</description>
+                </item>
+                <item>
+                    <name>Pi Tuner stations active</name>
+                    <type>TRAP</type>
+                    <key>pituner.stations_active</key>
+                    <delay>0</delay>
+                    <history>7d</history>
+                    <trends>0</trends>
+                    <status>ENABLED</status>
+                    <value_type>UNSIGNED</value_type>
+                    <description>Number of stations currently streaming.</description>
+                </item>
+                <item>
+                    <name>Pi Tuner heartbeat</name>
+                    <type>TRAP</type>
+                    <key>pituner.heartbeat</key>
+                    <delay>0</delay>
+                    <history>7d</history>
+                    <trends>0</trends>
+                    <status>ENABLED</status>
+                    <value_type>UNSIGNED</value_type>
+                    <description>Liveness marker sent every INTERVAL seconds (zabbix.conf). A missing value means the Pi or tuner.py is down.</description>
+                </item>
+            </items>
+            <triggers>
+                <trigger>
+                    <expression>{Pi Tuner v2:pituner.heartbeat.nodata(5m)}=1</expression>
+                    <name>Pi Tuner heartbeat lost</name>
+                    <priority>HIGH</priority>
+                    <description>No heartbeat received for 5 minutes - the Pi or the tuner service is down.</description>
+                    <status>ENABLED</status>
+                </trigger>
+                <trigger>
+                    <expression>find({Pi Tuner v2:pituner.status.last()},"down")=1</expression>
+                    <name>Pi Tuner station down</name>
+                    <priority>HIGH</priority>
+                    <description>At least one station has a pipeline that exited unexpectedly (dongle unplugged, Icecast unreachable, or decode failure).</description>
+                    <status>ENABLED</status>
+                </trigger>
+                <trigger>
+                    <expression>find({Pi Tuner v2:pituner.status.last()},"serial_not_found")=1</expression>
+                    <name>Pi Tuner serial not found</name>
+                    <priority>HIGH</priority>
+                    <description>A configured dongle serial is not present on any connected device.</description>
+                    <status>ENABLED</status>
+                </trigger>
+                <trigger>
+                    <expression>{Pi Tuner v2:pituner.stations_active.last()}=0</expression>
+                    <name>Pi Tuner no stations streaming</name>
+                    <priority>WARNING</priority>
+                    <description>Zero stations are currently streaming.</description>
+                    <status>ENABLED</status>
+                </trigger>
+            </triggers>
+        </template>
+    </templates>
+</zabbix_export>

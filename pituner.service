@@ -1,0 +1,18 @@
+[Unit]
+Description=Pi Tuner v2 (multi-station SDR streamer)
+After=network.target icecast2.service
+Wants=icecast2.service
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/pituner/tuner.py --dir /opt/pituner
+User=pituner
+Group=plugdev
+Restart=always
+RestartSec=5
+# Kill the whole cgroup on stop so rtl_fm/demux/ffmpeg children are cleaned up.
+KillMode=control-group
+TimeoutStopSec=15
+
+[Install]
+WantedBy=multi-user.target
