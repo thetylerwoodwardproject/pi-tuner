@@ -392,7 +392,7 @@ if [ "${INTERACTIVE}" = "1" ] \
   for i in $(seq 1 "${count}"); do
     info "Station ${i} of ${count}"
     name=$(ask_checked "  Station name (call sign, max 8 chars)" "" valid_name \
-      "Name must be 1-8 characters: letters/digits with an optional hyphen, e.g. WXYZ or WXYZ-FM.")
+      "Name must be 1-8 characters: letters/digits with an optional hyphen, e.g. WXYZ, WXYZ-FM, K244FM, or WXJ86.")
     name=$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')
     band=$(ask_checked "  Band" "FM" valid_band "Band must be FM or WX.")
     band=$(printf '%s' "$band" | tr '[:upper:]' '[:lower:]')
