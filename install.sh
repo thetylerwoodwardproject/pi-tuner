@@ -68,6 +68,14 @@ press_enter() {
 
 gen_pass() { head -c 16 /dev/urandom | md5sum | awk '{print $1}'; }
 
+# A "stock" serial is the default an unprogrammed dongle ships with (all zeros
+# or 00000001). Anything else is a custom serial the user already set.
+is_stock_serial() {
+  local s
+  s="$(printf '%s' "$1" | tr -d '[:space:]')"
+  [[ -z "$s" ]] || [[ "$s" =~ ^0*[01]$ ]]
+}
+
 # Prompts need a terminal on stdin. When piped (e.g. `curl ... | sudo bash`)
 # stdin is not a TTY, so run non-interactively and deploy the example stations.
 if [ -t 0 ]; then
@@ -257,7 +265,8 @@ count=0
 
 if [ "${INTERACTIVE}" = "1" ]; then
   info "Each station needs a dongle with a unique serial number."
-  info "We'll program them one at a time (requires plugging in each dongle alone)."
+  info "We'll check each dongle: if it already has a custom serial we keep it;"
+  info "if it's still the factory default we'll program a new one."
 
   info "Detecting currently-connected devices..."
   timeout 4 rtl_test 2>&1 | grep -E '^[[:space:]]*[0-9]+:' || info "  (no devices detected right now)"
@@ -268,18 +277,26 @@ if [ "${INTERACTIVE}" = "1" ]; then
     echo "   1. Unplug ALL dongles."
     echo "   2. Plug in ONLY dongle ${i}."
     press_enter "  Press Enter when ready... "
-    default_serial="$(printf '0000100%d' "${i}")"
-    s=$(ask "Serial number for dongle ${i}" "${default_serial}")
-    if echo y | timeout 20 rtl_eeprom -d 0 -s "${s}"; then
-      ok "Wrote serial ${s} to dongle ${i}."
+
+    # Read the dongle's current serial and keep it if it's already custom.
+    current=$(rtl_eeprom -d 0 2>&1 | awk -F'\t' '/^Serial number:/{print $NF}' | tr -d '[:space:]')
+    if [ -n "${current}" ] && ! is_stock_serial "${current}"; then
+      ok "Dongle ${i} already has serial ${current} — keeping it as-is."
+      SERIALS+=("${current}")
     else
-      warn "rtl_eeprom failed (or timed out) for dongle ${i}. Check it is plugged in and not in use."
+      default_serial="$(printf '0000100%d' "${i}")"
+      s=$(ask "Serial number for dongle ${i}" "${default_serial}")
+      if echo y | timeout 20 rtl_eeprom -d 0 -s "${s}"; then
+        ok "Wrote serial ${s} to dongle ${i}."
+      else
+        warn "rtl_eeprom failed (or timed out) for dongle ${i}. Check it is plugged in and not in use."
+      fi
+      SERIALS+=("${s}")
     fi
-    SERIALS+=("${s}")
     echo ""
   done
 
-  info "Unplug and replug all dongles so the new serials take effect, then continue."
+  info "Unplug and replug all dongles so any new serials take effect, then continue."
   press_enter "Press Enter when all dongles are plugged back in... "
 else
   info "Skipping serial programming (no interactive terminal)."
