@@ -32,12 +32,13 @@ installed for you by the installer.
 Run this on the Pi:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/thetylerwoodwardproject/pi-tuner/main/install.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/thetylerwoodwardproject/pi-tuner/main/install.sh -o /tmp/pituner-install.sh && sudo bash /tmp/pituner-install.sh
 ```
 
 The installer walks you through each step and asks before doing anything:
-installs packages, configures Icecast, helps you program your dongle serials,
-writes your station configs, and verifies everything is streaming.
+it installs packages, configures Icecast, guides you through programming your
+dongle serials, and helps you set up your first station or two. You don't need
+to set up every station now — you can add more any time.
 
 Prefer to look at the code first? Clone and run instead:
 

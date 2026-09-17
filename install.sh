@@ -8,14 +8,16 @@
 #
 # Run as root on a Raspberry Pi (Raspberry Pi OS / Debian).
 #
-#   One-liner (downloads and runs everything):
-#     curl -fsSL https://raw.githubusercontent.com/thetylerwoodwardproject/pi-tuner/main/install.sh | sudo bash
+#   One-liner (downloads then runs — keeps the prompts interactive):
+#     curl -fsSL https://raw.githubusercontent.com/thetylerwoodwardproject/pi-tuner/main/install.sh -o /tmp/pituner-install.sh && sudo bash /tmp/pituner-install.sh
 #
 #   Or clone first, then run from the project directory:
 #     sudo ./install.sh
 #
 # When run via the one-liner the script downloads the rest of the project into
 # a temp dir; when run from a clone it installs from beside tuner.py.
+# If stdin is not a terminal (e.g. piped `curl | bash`), prompts are skipped
+# and the example station files are deployed instead.
 
 set -uo pipefail
 
@@ -65,6 +67,14 @@ press_enter() {
 }
 
 gen_pass() { head -c 16 /dev/urandom | md5sum | awk '{print $1}'; }
+
+# Prompts need a terminal on stdin. When piped (e.g. `curl ... | sudo bash`)
+# stdin is not a TTY, so run non-interactively and deploy the example stations.
+if [ -t 0 ]; then
+  INTERACTIVE=1
+else
+  INTERACTIVE=0
+fi
 
 # ---------------------------------------------------------------- preflight
 if [ "${EUID}" -ne 0 ]; then
@@ -209,38 +219,52 @@ ok "Application files installed."
 
 # ------------------------------------------------------------- serials
 step "5 of 8: Program dongle serials"
-info "Each station needs a dongle with a unique serial number."
-info "We'll program them one at a time (requires plugging in each dongle alone)."
-
-info "Detecting currently-connected devices..."
-timeout 4 rtl_test 2>&1 | grep -E '^[[:space:]]*[0-9]+:' || info "  (no devices detected right now)"
-
-count=$(ask "How many dongles / stations will you use?" "1")
 SERIALS=()
-for i in $(seq 1 "${count}"); do
-  info "Dongle ${i} of ${count}:"
-  echo "   1. Unplug ALL dongles."
-  echo "   2. Plug in ONLY dongle ${i}."
-  press_enter "  Press Enter when ready... "
-  default_serial="$(printf '0000100%d' "${i}")"
-  s=$(ask "Serial number for dongle ${i}" "${default_serial}")
-  if rtl_eeprom -d 0 -s "${s}" >/dev/null 2>&1; then
-    ok "Wrote serial ${s} to dongle ${i}."
-  else
-    warn "rtl_eeprom failed for dongle ${i}. Check it is plugged in and not in use."
-  fi
-  SERIALS+=("${s}")
-  echo ""
-done
+count=0
 
-info "Unplug and replug all dongles so the new serials take effect, then continue."
-press_enter "Press Enter when all dongles are plugged back in... "
+if [ "${INTERACTIVE}" = "1" ]; then
+  info "Each station needs a dongle with a unique serial number."
+  info "We'll program them one at a time (requires plugging in each dongle alone)."
+
+  info "Detecting currently-connected devices..."
+  timeout 4 rtl_test 2>&1 | grep -E '^[[:space:]]*[0-9]+:' || info "  (no devices detected right now)"
+
+  count=$(ask "How many dongles / stations will you use?" "1")
+  for i in $(seq 1 "${count}"); do
+    info "Dongle ${i} of ${count}:"
+    echo "   1. Unplug ALL dongles."
+    echo "   2. Plug in ONLY dongle ${i}."
+    press_enter "  Press Enter when ready... "
+    default_serial="$(printf '0000100%d' "${i}")"
+    s=$(ask "Serial number for dongle ${i}" "${default_serial}")
+    if rtl_eeprom -d 0 -s "${s}" >/dev/null 2>&1; then
+      ok "Wrote serial ${s} to dongle ${i}."
+    else
+      warn "rtl_eeprom failed for dongle ${i}. Check it is plugged in and not in use."
+    fi
+    SERIALS+=("${s}")
+    echo ""
+  done
+
+  info "Unplug and replug all dongles so the new serials take effect, then continue."
+  press_enter "Press Enter when all dongles are plugged back in... "
+else
+  info "Skipping serial programming (no interactive terminal)."
+  info "Program each dongle manually, one at a time:"
+  info "    sudo rtl_eeprom -d 0 -s 00001001"
+  info "  then unplug/replug, and use 00001002, 00001003, ... for the others."
+fi
 
 # ------------------------------------------------------------- stations
 step "6 of 8: Configure stations"
-info "One config file per station. Enter the details for each."
 
-rm -f "${APP_DIR}"/stations/*.conf
+# Always deploy the example station files as editable starting templates.
+if compgen -G "${SRC}/stations/*.conf" >/dev/null 2>&1; then
+  cp "${SRC}"/stations/*.conf "${APP_DIR}/stations/"
+  ok "Deployed example station files to ${APP_DIR}/stations/"
+else
+  warn "No example station files found in ${SRC}/stations/."
+fi
 
 write_station() {
   local name="$1" band="$2" freq="$3" serial="$4" gain="$5" mount="$6" file="$7"
@@ -258,26 +282,33 @@ write_station() {
   } > "${file}"
 }
 
-for i in $(seq 1 "${count}"); do
-  info "Station ${i} of ${count}"
-  name=$(ask "  Station name" "Station ${i}")
-  band=$(ask "  Band (fm or wx)" "fm")
-  freq=$(ask "  Frequency in MHz" "98.1")
-  serial="${SERIALS[$((i-1))]:-$(printf '0000100%d' "${i}")}"
-  serial=$(ask "  Dongle serial" "${serial}")
-  gain=$(ask "  Gain in dB (press Enter for auto-gain)" "")
-  mount=$(ask "  Icecast mount path" "/tuner${i}")
-  write_station "${name}" "${band}" "${freq}" "${serial}" "${gain}" "${mount}" \
-    "${APP_DIR}/stations/$(printf 'station%d.conf' "${i}")"
-  ok "Wrote station ${i} (${name}, ${band} ${freq} MHz)."
-done
+if [ "${INTERACTIVE}" = "1" ] && [ "${count}" -gt 0 ] \
+   && confirm "Configure stations now (name, band, frequency, serial)?"; then
+  rm -f "${APP_DIR}"/stations/*.conf
+  for i in $(seq 1 "${count}"); do
+    info "Station ${i} of ${count}"
+    name=$(ask "  Station name" "Station ${i}")
+    band=$(ask "  Band (fm or wx)" "fm")
+    freq=$(ask "  Frequency in MHz" "98.1")
+    serial="${SERIALS[$((i-1))]:-$(printf '0000100%d' "${i}")}"
+    serial=$(ask "  Dongle serial" "${serial}")
+    gain=$(ask "  Gain in dB (press Enter for auto-gain)" "")
+    mount=$(ask "  Icecast mount path" "/tuner${i}")
+    write_station "${name}" "${band}" "${freq}" "${serial}" "${gain}" "${mount}" \
+      "${APP_DIR}/stations/$(printf 'station%d.conf' "${i}")"
+    ok "Wrote station ${i} (${name}, ${band} ${freq} MHz)."
+  done
+else
+  info "Edit ${APP_DIR}/stations/*.conf to set your serials and frequencies,"
+  info "then run:  sudo systemctl reload pituner"
+fi
 
 chown -R pituner:pituner "${APP_DIR}/stations"
 
 # ------------------------------------------------------------- zabbix
 step "7 of 8: Zabbix alerts (optional)"
 ZABBIX_ENABLED="false"
-if confirm "Enable Zabbix trapper alerts now?"; then
+if [ "${INTERACTIVE}" = "1" ] && confirm "Enable Zabbix trapper alerts now?"; then
   server=$(ask "  Zabbix server address" "zabbix.internal.example.com")
   port=$(ask "  Zabbix trapper port" "10051")
   hostname=$(ask "  Zabbix host name (the host you'll attach the template to)" "pituner")
@@ -322,10 +353,21 @@ fi
 
 # ------------------------------------------------------------- service
 step "8 of 8: Install and start the service"
-install -m 644 "${SRC}/pituner.service" /etc/systemd/system/pituner.service
+install -m 644 "${SRC}/pituner.service" /etc/systemd/system/pituner.service \
+  || die "Could not copy pituner.service to /etc/systemd/system/"
 systemctl daemon-reload
-systemctl enable pituner.service >/dev/null 2>&1 || die "Failed to enable pituner.service."
-systemctl restart pituner.service || die "Failed to start pituner.service."
+if ! systemctl enable pituner.service 2>&1; then
+  fail "Failed to enable pituner.service (see the error above)."
+  die "Run 'sudo systemctl enable pituner.service' to see the full message."
+fi
+if ! systemctl restart pituner.service 2>&1; then
+  fail "Failed to start pituner.service."
+  echo ""
+  systemctl status pituner.service --no-pager -l 2>&1 || true
+  echo ""
+  fail "Run 'sudo journalctl -u pituner.service --no-pager -n 50' for details."
+  die "Service did not start."
+fi
 ok "pituner.service installed and started."
 
 # ------------------------------------------------------------- verify
@@ -360,9 +402,19 @@ echo -e "${BOLD}${GREEN}Installation complete.${RESET}"
 echo ""
 echo "  Stream URLs:     http://<this-pi>:8000/<mount>"
 echo "  Station configs: ${APP_DIR}/stations/*.conf"
-echo "  Add a station:   drop a new .conf in stations/, then:  sudo systemctl reload pituner"
 echo "  View logs:       journalctl -u pituner -f"
 echo "  Icecast status:  http://<this-pi>:8000/status-json.xsl"
+echo ""
+echo "  To add (or edit) a station later, put a file like this in"
+echo "  ${APP_DIR}/stations/ and run:  sudo systemctl reload pituner"
+echo ""
+echo "    # my-station.conf"
+echo "    NAME=My Station"
+echo "    BAND=fm            # fm | wx"
+echo "    FREQUENCY=98.1"
+echo "    SERIAL=00001001"
+echo "    GAIN=40.2          # optional; delete for auto-gain"
+echo "    MOUNT=/mystation"
 echo ""
 echo "  Icecast admin password: ${ADMIN_PASS}"
 echo "  Icecast source password (also in icecast.conf): ${SOURCE_PASS}"
