@@ -301,6 +301,14 @@ if [ "${INTERACTIVE}" = "1" ]; then
     done
     DONGLE_COUNT=${#SERIALS[@]}
     info "Found ${DONGLE_COUNT} dongle(s): ${SERIALS[*]}"
+
+    # Warn about duplicate serials (two dongles reporting the same number).
+    DUP_SERIALS=$(printf '%s\n' "${SERIALS[@]}" | sort | uniq -d)
+    if [ -n "${DUP_SERIALS}" ]; then
+      warn "DUPLICATE SERIAL detected: ${DUP_SERIALS//$'\n'/ }."
+      warn "Each dongle must have a unique serial. Fix with:"
+      warn "    sudo rtl_eeprom -d <index> -s <unique-serial>   (then unplug/replug)"
+    fi
   fi
 else
   info "Skipping serial detection (no interactive terminal)."
