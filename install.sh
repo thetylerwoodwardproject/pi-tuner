@@ -54,6 +54,20 @@ ask() {
   fi
 }
 
+# ask_checked <prompt> <default> <validator-fn> <error-message>
+# Prompts repeatedly until the answer passes the validator function.
+ask_checked() {
+  local prompt="$1" default="$2" validator="$3" errmsg="$4" ans
+  while true; do
+    ans=$(ask "$prompt" "$default")
+    if "$validator" "$ans"; then
+      printf '%s' "$ans"
+      return 0
+    fi
+    printf "${RED}[ERROR]${RESET} %s\n" "$errmsg" >&2
+  done
+}
+
 confirm() {
   local prompt="${1:-Continue?}" ans
   printf "${YELLOW}[?]${RESET} %s [Y/n]: " "$prompt" >&2
@@ -74,6 +88,26 @@ is_stock_serial() {
   local s
   s="$(printf '%s' "$1" | tr -d '[:space:]')"
   [[ -z "$s" ]] || [[ "$s" =~ ^0*[01]$ ]]
+}
+
+# Station name: 1-8 chars, letters/digits with an optional single hyphen group
+# (e.g. WXYZ, WXYZ-FM, WZYX-FM).
+valid_name() {
+  local n="$1"
+  [[ -n "$n" ]] && [[ "${#n}" -le 8 ]] && [[ "$n" =~ ^[A-Za-z0-9]+(-[A-Za-z0-9]+)?$ ]]
+}
+
+# Band: only fm or wx (case-insensitive).
+valid_band() {
+  local b
+  b="$(printf '%s' "$1" | tr '[:lower:]' '[:upper:]')"
+  [[ "$b" = "FM" || "$b" = "WX" ]]
+}
+
+# Frequency: a positive number within a sane broadcast range (80-170 MHz).
+valid_freq() {
+  local f="$1"
+  [[ "$f" =~ ^[0-9]+([.][0-9]*)?$ ]] && awk -v f="$f" 'BEGIN { exit !(f >= 80 && f <= 170) }'
 }
 
 # Prompts need a terminal on stdin. When piped (e.g. `curl ... | sudo bash`)
@@ -357,9 +391,12 @@ if [ "${INTERACTIVE}" = "1" ] \
   rm -f "${APP_DIR}"/stations/*.conf
   for i in $(seq 1 "${count}"); do
     info "Station ${i} of ${count}"
-    name=$(ask "  Station name" "Station ${i}")
-    band=$(ask "  Band (fm or wx)" "fm")
-    freq=$(ask "  Frequency in MHz" "98.1")
+    name=$(ask_checked "  Station name (call sign, max 8 chars)" "" valid_name \
+      "Name must be 1-8 characters: letters/digits with an optional hyphen, e.g. WXYZ or WXYZ-FM.")
+    name=$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')
+    band=$(ask_checked "  Band" "FM" valid_band "Band must be FM or WX.")
+    band=$(printf '%s' "$band" | tr '[:upper:]' '[:lower:]')
+    freq=$(ask_checked "  Frequency in MHz" "98.1" valid_freq "Frequency must be a number between 80 and 170 MHz.")
     serial="${SERIALS[$((i-1))]:-$(printf '0000100%d' "${i}")}"
     serial=$(ask "  Dongle serial" "${serial}")
     gain=$(ask "  Gain in dB (press Enter for auto-gain)" "")
