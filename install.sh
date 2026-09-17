@@ -394,7 +394,7 @@ if [ "${INTERACTIVE}" = "1" ] \
     name=$(ask_checked "  Station name (call sign, max 8 chars)" "" valid_name \
       "Name must be 1-8 characters: letters/digits with an optional hyphen, e.g. WXYZ, WXYZ-FM, K244FM, or WXJ86.")
     name=$(printf '%s' "$name" | tr '[:lower:]' '[:upper:]')
-    band=$(ask_checked "  Band" "FM" valid_band "Band must be FM or WX.")
+    band=$(ask_checked "  Band (FM or WX)" "FM" valid_band "Band must be FM or WX.")
     band=$(printf '%s' "$band" | tr '[:upper:]' '[:lower:]')
     freq=$(ask_checked "  Frequency in MHz" "98.1" valid_freq "Frequency must be a number between 80 and 170 MHz.")
     serial="${SERIALS[$((i-1))]:-$(printf '0000100%d' "${i}")}"
