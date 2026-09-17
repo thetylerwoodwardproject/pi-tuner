@@ -259,47 +259,40 @@ chmod 600 "${APP_DIR}/icecast.conf"
 ok "Application files installed."
 
 # ------------------------------------------------------------- serials
-step "5 of 8: Program dongle serials"
+step "5 of 8: Detect dongle serials"
 SERIALS=()
-count=0
+DONGLE_COUNT=0
 
 if [ "${INTERACTIVE}" = "1" ]; then
-  info "Each station needs a dongle with a unique serial number."
-  info "We'll check each dongle: if it already has a custom serial we keep it;"
-  info "if it's still the factory default we'll program a new one."
+  info "Detecting connected dongles and their serials..."
 
-  info "Detecting currently-connected devices..."
-  timeout 4 rtl_test 2>&1 | grep -E '^[[:space:]]*[0-9]+:' || info "  (no devices detected right now)"
+  # Each rtl_test line looks like: "  0:  Realtek, RTL2838UHIDIR, SN: 00001001"
+  DEVICE_LINES=$(timeout 4 rtl_test 2>&1 | sed -nE 's/^[[:space:]]*([0-9]+):[[:space:]]+.*SN:[[:space:]]*([^[:space:]]+).*$/\1 \2/p')
 
-  count=$(ask "How many dongles / stations will you use?" "1")
-  for i in $(seq 1 "${count}"); do
-    info "Dongle ${i} of ${count}:"
-    echo "   1. Unplug ALL dongles."
-    echo "   2. Plug in ONLY dongle ${i}."
-    press_enter "  Press Enter when ready... "
-
-    # Read the dongle's current serial and keep it if it's already custom.
-    current=$(rtl_eeprom -d 0 2>&1 | awk -F'\t' '/^Serial number:/{print $NF}' | tr -d '[:space:]')
-    if [ -n "${current}" ] && ! is_stock_serial "${current}"; then
-      ok "Dongle ${i} already has serial ${current} — keeping it as-is."
-      SERIALS+=("${current}")
-    else
-      default_serial="$(printf '0000100%d' "${i}")"
-      s=$(ask "Serial number for dongle ${i}" "${default_serial}")
-      if echo y | timeout 20 rtl_eeprom -d 0 -s "${s}"; then
-        ok "Wrote serial ${s} to dongle ${i}."
+  if [ -z "${DEVICE_LINES}" ]; then
+    warn "No dongles detected. Check they are plugged in and the DVB driver is unloaded."
+  else
+    while read -r idx ser; do
+      [ -z "${idx}" ] && continue
+      if is_stock_serial "${ser}"; then
+        default_serial="$(printf '0000100%d' "$(( ${#SERIALS[@]} + 1 ))")"
+        s=$(ask "Dongle (index ${idx}) has stock serial '${ser}' — new serial?" "${default_serial}")
+        if echo y | timeout 20 rtl_eeprom -d "${idx}" -s "${s}"; then
+          ok "Programmed dongle index ${idx} with serial ${s}."
+        else
+          warn "rtl_eeprom failed for dongle index ${idx}. Check it is plugged in and not in use."
+        fi
+        SERIALS+=("${s}")
       else
-        warn "rtl_eeprom failed (or timed out) for dongle ${i}. Check it is plugged in and not in use."
+        ok "Dongle index ${idx}: serial ${ser} (kept as-is)."
+        SERIALS+=("${ser}")
       fi
-      SERIALS+=("${s}")
-    fi
-    echo ""
-  done
-
-  info "Unplug and replug all dongles so any new serials take effect, then continue."
-  press_enter "Press Enter when all dongles are plugged back in... "
+    done <<< "${DEVICE_LINES}"
+    DONGLE_COUNT=${#SERIALS[@]}
+    info "Found ${DONGLE_COUNT} dongle(s)."
+  fi
 else
-  info "Skipping serial programming (no interactive terminal)."
+  info "Skipping serial detection (no interactive terminal)."
   info "Program each dongle manually, one at a time:"
   info "    sudo rtl_eeprom -d 0 -s 00001001"
   info "  then unplug/replug, and use 00001002, 00001003, ... for the others."
@@ -332,8 +325,9 @@ write_station() {
   } > "${file}"
 }
 
-if [ "${INTERACTIVE}" = "1" ] && [ "${count}" -gt 0 ] \
+if [ "${INTERACTIVE}" = "1" ] \
    && confirm "Configure stations now (name, band, frequency, serial)?"; then
+  count=$(ask "How many stations will you configure?" "${DONGLE_COUNT:-1}")
   rm -f "${APP_DIR}"/stations/*.conf
   for i in $(seq 1 "${count}"); do
     info "Station ${i} of ${count}"
