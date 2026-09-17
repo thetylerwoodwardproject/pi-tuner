@@ -103,6 +103,10 @@ echo "A minimal multi-station SDR streamer for Raspberry Pi."
 echo "This will install dependencies, set up Icecast, configure your stations,"
 echo "and verify everything is running."
 echo ""
+warn "This RESETS your Icecast configuration: it regenerates the source and"
+warn "admin passwords (overwriting any existing Icecast setup) and restarts"
+warn "Icecast. If you use Icecast for other streams, back it up first."
+echo ""
 
 # ------------------------------------------------------------- dependencies
 step "1 of 8: Install system packages"
@@ -176,6 +180,12 @@ fi
 
 # ------------------------------------------------------------- icecast
 step "3 of 8: Configure Icecast"
+warn "This resets the Icecast source/admin passwords and restarts Icecast,"
+warn "replacing any existing Icecast settings."
+if [ "${INTERACTIVE}" = "1" ] && ! confirm "Reset Icecast and continue?"; then
+  die "Installation cancelled. The Icecast reset is required so the tuner can stream."
+fi
+
 info "Generating a random source password and applying it to Icecast."
 
 ICECAST_XML="/etc/icecast2/icecast.xml"
@@ -195,7 +205,8 @@ else
   fi
 fi
 
-systemctl enable --now icecast2 >/dev/null 2>&1 || warn "Could not enable icecast2 (may need manual start)."
+systemctl enable icecast2 >/dev/null 2>&1 || warn "Could not enable icecast2 (may need manual start)."
+systemctl restart icecast2 >/dev/null 2>&1 || warn "Could not restart icecast2."
 sleep 1
 if curl -sf --max-time 5 http://localhost:8000/status-json.xsl >/dev/null; then
   ok "Icecast is responding on port 8000."

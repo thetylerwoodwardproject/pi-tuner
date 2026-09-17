@@ -40,6 +40,10 @@ it installs packages, configures Icecast, guides you through programming your
 dongle serials, and helps you set up your first station or two. You don't need
 to set up every station now — you can add more any time.
 
+> **Note:** the installer **resets your Icecast configuration** — it regenerates
+> the source/admin passwords and restarts Icecast. If you already use Icecast
+> for other streams, back it up first.
+
 Prefer to look at the code first? Clone and run instead:
 
 ```sh
