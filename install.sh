@@ -264,19 +264,30 @@ SERIALS=()
 DONGLE_COUNT=0
 
 if [ "${INTERACTIVE}" = "1" ]; then
-  info "Detecting connected dongles and their serials..."
+  info "Detecting connected dongles..."
 
-  # Each rtl_test line looks like: "  0:  Realtek, RTL2838UHIDIR, SN: 00001001"
-  DEVICE_LINES=$(timeout 4 rtl_test 2>&1 | sed -nE 's/^[[:space:]]*([0-9]+):[[:space:]]+.*SN:[[:space:]]*([^[:space:]]+).*$/\1 \2/p')
+  # Diagnostics: show what rtl_test sees.
+  info "rtl_test reports:"
+  timeout 4 rtl_test 2>&1 | grep -E 'Found|SN:' | sed 's/^/      /' || true
 
-  if [ -z "${DEVICE_LINES}" ]; then
+  # Device count comes from rtl_test's "Found N device(s):" line.
+  DEVICE_COUNT=$(timeout 4 rtl_test 2>&1 | sed -nE 's/^Found[[:space:]]+([0-9]+)[[:space:]]+device.*/\1/p' | head -n1)
+  DEVICE_COUNT=${DEVICE_COUNT:-0}
+
+  if [ "${DEVICE_COUNT}" -eq 0 ]; then
     warn "No dongles detected. Check they are plugged in and the DVB driver is unloaded."
   else
-    while read -r idx ser; do
-      [ -z "${idx}" ] && continue
-      if is_stock_serial "${ser}"; then
+    for idx in $(seq 0 "$(( DEVICE_COUNT - 1 ))"); do
+      # Read the EEPROM serial directly from each device index (authoritative;
+      # rtl_test's name string can vary, this "Serial number:" field cannot).
+      serial=$(timeout 10 rtl_eeprom -d "${idx}" 2>&1 | awk -F'\t' '/^Serial number:/{print $NF}' | tr -d '[:space:]')
+      if [ -z "${serial}" ]; then
+        warn "Could not read serial from dongle index ${idx} (skipping)."
+        continue
+      fi
+      if is_stock_serial "${serial}"; then
         default_serial="$(printf '0000100%d' "$(( ${#SERIALS[@]} + 1 ))")"
-        s=$(ask "Dongle (index ${idx}) has stock serial '${ser}' — new serial?" "${default_serial}")
+        s=$(ask "Dongle index ${idx} has stock serial '${serial}' — new serial?" "${default_serial}")
         if echo y | timeout 20 rtl_eeprom -d "${idx}" -s "${s}"; then
           ok "Programmed dongle index ${idx} with serial ${s}."
         else
@@ -284,12 +295,12 @@ if [ "${INTERACTIVE}" = "1" ]; then
         fi
         SERIALS+=("${s}")
       else
-        ok "Dongle index ${idx}: serial ${ser} (kept as-is)."
-        SERIALS+=("${ser}")
+        ok "Dongle index ${idx}: serial ${serial} (kept as-is)."
+        SERIALS+=("${serial}")
       fi
-    done <<< "${DEVICE_LINES}"
+    done
     DONGLE_COUNT=${#SERIALS[@]}
-    info "Found ${DONGLE_COUNT} dongle(s)."
+    info "Found ${DONGLE_COUNT} dongle(s): ${SERIALS[*]}"
   fi
 else
   info "Skipping serial detection (no interactive terminal)."
