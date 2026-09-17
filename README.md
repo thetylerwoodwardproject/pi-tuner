@@ -182,6 +182,16 @@ unplugged, Icecast unreachable, decode failure), backing off between attempts.
   pituner.service     # systemd unit
 ```
 
+## Uninstall
+
+Remove the service, application files, the `pituner` user, and the `demux`
+decoder (system packages are left in place):
+
+```sh
+sudo ./uninstall.sh          # asks before removing each thing
+sudo ./uninstall.sh --yes    # remove everything without prompting
+```
+
 ## License
 
 See [LICENSE](LICENSE).
