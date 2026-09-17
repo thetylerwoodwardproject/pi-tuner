@@ -6,15 +6,22 @@
 # your station configs, sets up Zabbix (optional), installs the systemd
 # service, and verifies the whole thing is streaming.
 #
-# Run as root on a Raspberry Pi (Raspberry Pi OS / Debian):
-#   sudo ./install.sh
+# Run as root on a Raspberry Pi (Raspberry Pi OS / Debian).
 #
-# The script installs from the directory it lives in (next to tuner.py).
+#   One-liner (downloads and runs everything):
+#     curl -fsSL https://raw.githubusercontent.com/thetylerwoodwardproject/pi-tuner/main/install.sh | sudo bash
+#
+#   Or clone first, then run from the project directory:
+#     sudo ./install.sh
+#
+# When run via the one-liner the script downloads the rest of the project into
+# a temp dir; when run from a clone it installs from beside tuner.py.
 
 set -uo pipefail
 
-SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")" 2>/dev/null && pwd)"
 APP_DIR="/opt/pituner"
+REPO="https://github.com/thetylerwoodwardproject/pi-tuner"
 
 # ------------------------------------------------------------- text helpers
 if [ -t 1 ] && command -v tput >/dev/null 2>&1; then
@@ -61,7 +68,19 @@ gen_pass() { head -c 16 /dev/urandom | md5sum | awk '{print $1}'; }
 
 # ---------------------------------------------------------------- preflight
 if [ "${EUID}" -ne 0 ]; then
-  die "Please run as root:  sudo ./install.sh"
+  die "Please run as root. Try:  curl -fsSL ${REPO}/raw/main/install.sh | sudo bash"
+fi
+
+# When run via `curl ... | sudo bash` the script is read from stdin and
+# tuner.py is not beside it, so download the project into a temp dir.
+if [ ! -f "${SRC}/tuner.py" ]; then
+  info "Fetching Pi Tuner v2 files..."
+  SRC_TMP="$(mktemp -d)"
+  trap 'rm -rf "${SRC_TMP}"' EXIT
+  if ! curl -fsSL "${REPO}/archive/refs/heads/main.tar.gz" | tar xz -C "${SRC_TMP}"; then
+    die "Failed to download the project. Clone it manually:  git clone ${REPO}.git && cd pi-tuner && sudo ./install.sh"
+  fi
+  SRC="$(find "${SRC_TMP}" -mindepth 1 -maxdepth 1 -type d | head -n1)"
 fi
 
 if [ ! -f "${SRC}/tuner.py" ]; then
