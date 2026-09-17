@@ -15,9 +15,13 @@ Usage:
 
     --check  validate config, resolve serials, and print the pipeline
              command for each station without launching anything.
+
+    tuner.py detect-eas --dir /opt/pituner <name> <rate> <channels>
+             run the EAS attention-tone detector on raw s16le PCM from stdin.
 """
 import argparse
 import json
+import math
 import os
 import re
 import signal
@@ -29,6 +33,7 @@ import threading
 import time
 
 DEFAULT_DIR = "/opt/pituner"
+TUNER_PATH = os.path.realpath(os.path.abspath(__file__))
 
 # ------------------------------------------------------------------- logging
 
@@ -82,6 +87,12 @@ def _safe_mount(text):
     if not mount.startswith("/"):
         mount = "/" + mount
     return mount
+
+
+def _eas_tee(name, sample_rate, channels, eas_dir):
+    """Return the pipeline fragment that taps audio to the EAS tone detector."""
+    return (f"tee --output-error=warn >(python3 {TUNER_PATH} detect-eas "
+            f'--dir "{eas_dir}" "{name}" {sample_rate} {channels})')
 
 
 # --------------------------------------------------------- device resolution
@@ -178,7 +189,7 @@ def load_stations(stations_dir):
     return stations
 
 
-def build_command(cfg, ice, device_index):
+def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR):
     """Assemble the shell pipeline for one station."""
     freq_hz = int(cfg["freq"] * 1_000_000)
     name = _safe_name(cfg["name"])
@@ -188,14 +199,18 @@ def build_command(cfg, ice, device_index):
               f'-ice_name "{name}" -content_type audio/mpeg {ice_url}')
 
     if cfg["band"] == "wx":
-        return (f"rtl_fm -d {device_index} -f {freq_hz} -s 25000 -E deemp -F 9 | "
-                f"ffmpeg -f s16le -ar 25000 -ac 1 -i pipe:0 {ffmpeg}")
+        cmd = f"rtl_fm -d {device_index} -f {freq_hz} -s 25000 -E deemp -F 9"
+        if eas:
+            cmd += f" | {_eas_tee(name, 25000, 1, eas_dir)}"
+        return cmd + f" | ffmpeg -f s16le -ar 25000 -ac 1 -i pipe:0 {ffmpeg}"
 
     gain = f"-g {cfg['gain']} " if cfg.get("gain") else ""
-    return (f"rtl_fm -d {device_index} -M fm -l 0 -A std -p 0 -s 192000 {gain}"
-            f"-F 9 -f {freq_hz} | "
-            f"demux -r 192000 -R 48000 -d 75 | "
-            f"ffmpeg -f s16le -ar 48000 -ac 2 -i pipe:0 {ffmpeg}")
+    cmd = (f"rtl_fm -d {device_index} -M fm -l 0 -A std -p 0 -s 192000 {gain}"
+           f"-F 9 -f {freq_hz} | "
+           f"demux -r 192000 -R 48000 -d 75")
+    if eas:
+        cmd += f" | {_eas_tee(name, 48000, 2, eas_dir)}"
+    return cmd + f" | ffmpeg -f s16le -ar 48000 -ac 2 -i pipe:0 {ffmpeg}"
 
 
 # ----------------------------------------------------------------- zabbix
@@ -229,6 +244,7 @@ class ZabbixSender:
         self.key_status = conf.get("key_status", "pituner.status")
         self.key_active = conf.get("key_active", "pituner.stations_active")
         self.key_heartbeat = conf.get("key_heartbeat", "pituner.heartbeat")
+        self.key_eas = conf.get("key_eas", "pituner.eas")
         try:
             self.interval = int(conf.get("interval", "60"))
         except ValueError:
@@ -272,6 +288,96 @@ class ZabbixSender:
         ])
 
 
+# ------------------------------------------------- EAS attention-tone detection
+# The EAS/SAME attention signal is a simultaneous 853 Hz + 960 Hz dual-tone.
+# We detect it with a Goertzel filter over short windows and pulse a Zabbix
+# item (1 for EAS_HOLD_SECS, then back to 0) so a trigger on last()=1 fires
+# and then auto-recovers.
+
+EAS_FREQ1 = 853.0
+EAS_FREQ2 = 960.0
+EAS_WINDOW_SECS = 0.25
+EAS_CONFIRM_WINDOWS = 2
+EAS_HOLD_SECS = 10
+EAS_COOLDOWN_SECS = 60
+# Each tone must carry at least this fraction of the window's total energy to
+# count. A clean 853+960 dual-tone puts ~0.25 into each tone; noise/music is
+# far lower. Raise it to reduce false positives, lower it if detection is
+# missed on weak signals.
+EAS_TONE_RATIO = 0.10
+
+
+def _goertzel(samples, freq, sample_rate):
+    """Return the raw power of `freq` present in `samples`."""
+    n = len(samples)
+    k = int(round(n * freq / sample_rate))
+    if k <= 0 or k >= n:
+        return 0.0
+    coeff = 2.0 * math.cos(2.0 * math.pi * k / n)
+    s_prev = 0.0
+    s_prev2 = 0.0
+    for x in samples:
+        s = x + coeff * s_prev - s_prev2
+        s_prev2 = s_prev
+        s_prev = s
+    return s_prev2 * s_prev2 + s_prev * s_prev - coeff * s_prev * s_prev2
+
+
+def _eas_tone_present(samples, sample_rate):
+    total = sum(float(x) * x for x in samples)
+    if total <= 0:
+        return False
+    n = len(samples)
+    p1 = _goertzel(samples, EAS_FREQ1, sample_rate) / (n * total)
+    p2 = _goertzel(samples, EAS_FREQ2, sample_rate) / (n * total)
+    return p1 > EAS_TONE_RATIO and p2 > EAS_TONE_RATIO
+
+
+def run_eas_detector(base_dir, name, sample_rate, channels):
+    """Read s16le PCM from stdin and pulse a Zabbix item on the EAS tone.
+
+    Best-effort and non-blocking: a missing Zabbix server is ignored and the
+    process exits cleanly on stdin EOF, never stalling the audio pipeline.
+    """
+    zbx = ZabbixSender(parse_keyvalue(os.path.join(base_dir, "zabbix.conf")))
+    block = int(sample_rate * EAS_WINDOW_SECS)
+    chunk = block * 2 * channels  # bytes per window (2 bytes per sample)
+    hits = 0
+    pulsing = False
+    pulse_start = 0.0
+    cooldown_until = 0.0
+    while True:
+        raw = sys.stdin.buffer.read(chunk)
+        if len(raw) < chunk:
+            break
+        samples = struct.unpack("<%dh" % (len(raw) // 2), raw)
+        if channels == 2:
+            samples = samples[0::2]  # left channel (attention tone is mono)
+        now = time.time()
+        if pulsing and now - pulse_start >= EAS_HOLD_SECS:
+            zbx.send([(zbx.key_eas, 0)])
+            pulsing = False
+            cooldown_until = now + EAS_COOLDOWN_SECS
+        if pulsing or now < cooldown_until:
+            hits = 0
+            continue
+        if _eas_tone_present(samples, sample_rate):
+            hits += 1
+        else:
+            hits = 0
+        if hits >= EAS_CONFIRM_WINDOWS:
+            log(f"EAS attention tone heard on {name}")
+            zbx.send([
+                (zbx.key_eas, 1),
+                (zbx.key_event, f"EAS attention tone heard on {name}"),
+            ])
+            pulsing = True
+            pulse_start = now
+            hits = 0
+    if pulsing:  # pipeline ended mid-pulse: don't leave the item stuck at 1
+        zbx.send([(zbx.key_eas, 0)])
+
+
 # ---------------------------------------------------------------- station
 
 class Station:
@@ -291,6 +397,7 @@ class Tuner:
         self.dir = base_dir
         self.ice = {"host": "localhost", "port": "8000", "password": "hackme"}
         self.zbx = ZabbixSender({})
+        self.eas_enabled = False
         self.stations = []
         self.devices = []
         self._last_scan = 0.0
@@ -309,6 +416,8 @@ class Tuner:
         }
         zbx = parse_keyvalue(os.path.join(self.dir, "zabbix.conf"))
         self.zbx = ZabbixSender(zbx)
+        eas_on = str(zbx.get("eas_detect", "false")).lower() in ("1", "true", "yes", "on")
+        self.eas_enabled = eas_on and self.zbx.enabled
         self.stations = [Station(c) for c in
                          load_stations(os.path.join(self.dir, "stations"))]
 
@@ -351,9 +460,13 @@ class Tuner:
             self.set_status(st, "serial_not_found", f"serial {st.cfg['serial']} not found")
             st.retry_at = time.time() + 10
             return
-        cmd = build_command(st.cfg, self.ice, index)
+        cmd = build_command(st.cfg, self.ice, index,
+                            eas=self.eas_enabled, eas_dir=self.dir)
         try:
-            st.proc = subprocess.Popen(cmd, shell=True, stdout=subprocess.DEVNULL)
+            st.proc = subprocess.Popen(
+                cmd, shell=True, stdout=subprocess.DEVNULL,
+                executable="/bin/bash", start_new_session=True,
+            )
         except Exception as e:  # noqa: BLE001 - surfaced via status/log
             st.proc = None
             self.set_status(st, "down", f"launch failed: {e}")
@@ -364,13 +477,24 @@ class Tuner:
         st.backoff = 2.0
 
     def stop_station(self, st):
-        if st.proc is not None:
+        if st.proc is None:
+            return
+        try:
+            os.killpg(os.getpgid(st.proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
             st.proc.terminate()
+        try:
+            st.proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
             try:
-                st.proc.wait(timeout=3)
-            except subprocess.TimeoutExpired:
+                os.killpg(os.getpgid(st.proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
                 st.proc.kill()
-            st.proc = None
+            try:
+                st.proc.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                pass
+        st.proc = None
 
     # -- supervisor -------------------------------------------------------
 
@@ -454,14 +578,31 @@ def run_check(base_dir):
             log(f"station {st.name}: SERIAL {st.cfg['serial'] or '(none)'} NOT FOUND",
                 err=True)
         else:
-            cmd = build_command(st.cfg, tuner.ice, index)
+            cmd = build_command(st.cfg, tuner.ice, index,
+                                eas=tuner.eas_enabled, eas_dir=tuner.dir)
             log(f"station {st.name}: device {index} -> {cmd}")
     return 0
 
 
 # ------------------------------------------------------------------- main
 
+def _main_detect_eas(argv):
+    parser = argparse.ArgumentParser(prog="tuner.py detect-eas")
+    parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
+    parser.add_argument("name", help="station name (for the Zabbix event)")
+    parser.add_argument("rate", type=int, help="PCM sample rate in Hz")
+    parser.add_argument("channels", type=int, help="audio channel count (1 or 2)")
+    args = parser.parse_args(argv)
+    run_eas_detector(args.dir, args.name, args.rate, args.channels)
+    return 0
+
+
 def main(argv=None):
+    if argv is None:
+        argv = sys.argv[1:]
+    if argv and argv[0] == "detect-eas":
+        return _main_detect_eas(argv[1:])
+
     parser = argparse.ArgumentParser(prog="tuner.py", description=__doc__)
     parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory (default %(default)s)")
     parser.add_argument("--check", action="store_true", help="validate config and print pipelines, then exit")

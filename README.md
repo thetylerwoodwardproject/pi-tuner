@@ -159,6 +159,21 @@ status heartbeat to it (no agent needed on the Pi).
 Zabbix being unreachable never affects tuning — sends are best-effort and
 logged.
 
+## EAS attention-tone detection (optional)
+
+If Zabbix is enabled, the Pi can listen for the EAS/SAME **attention signal** —
+a simultaneous 853 Hz + 960 Hz dual-tone broadcast on FM and NOAA WX before
+emergency messages — and alert you when it's heard.
+
+Set `EAS_DETECT=true` in `zabbix.conf` (the default). When the tone is detected
+on any FM/WX station, the Pi pushes `pituner.eas = 1` to Zabbix, holds it for
+~10 seconds, then resets it to `0`, so a trigger on `last()=1` fires and then
+auto-recovers. The station name is logged in `pituner.event`.
+
+Detection is tone-only (it does not decode the SAME data). The thresholds are
+constants at the top of `tuner.py` (`EAS_TONE_RATIO`, `EAS_HOLD_SECS`,
+`EAS_COOLDOWN_SECS`) if you need to tune them for your signal levels.
+
 ## Troubleshooting
 
 | Problem                          | Check                                              |

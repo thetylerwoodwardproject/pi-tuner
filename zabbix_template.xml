@@ -62,6 +62,17 @@
                     <value_type>UNSIGNED</value_type>
                     <description>Liveness marker sent every INTERVAL seconds (zabbix.conf). A missing value means the Pi or tuner.py is down.</description>
                 </item>
+                <item>
+                    <name>Pi Tuner EAS attention tone</name>
+                    <type>TRAP</type>
+                    <key>pituner.eas</key>
+                    <delay>0</delay>
+                    <history>7d</history>
+                    <trends>0</trends>
+                    <status>ENABLED</status>
+                    <value_type>UNSIGNED</value_type>
+                    <description>Set to 1 for ~10 seconds when the EAS/SAME attention tone (853+960 Hz) is heard on a station, then reset to 0. See the pituner.event item for which station.</description>
+                </item>
             </items>
             <triggers>
                 <trigger>
@@ -69,6 +80,13 @@
                     <name>Pi Tuner heartbeat lost</name>
                     <priority>HIGH</priority>
                     <description>No heartbeat received for 5 minutes - the Pi or the tuner service is down.</description>
+                    <status>ENABLED</status>
+                </trigger>
+                <trigger>
+                    <expression>{Pi Tuner v2:pituner.eas.last()}=1</expression>
+                    <name>Pi Tuner EAS attention tone heard</name>
+                    <priority>HIGH</priority>
+                    <description>The EAS/SAME attention tone (853+960 Hz) was heard on a monitored station. Auto-recovers when the item drops back to 0.</description>
                     <status>ENABLED</status>
                 </trigger>
                 <trigger>
