@@ -120,6 +120,19 @@ else
   info "Icecast config not found or already unmodified."
 fi
 
+# ------------------------------------------------------------- logs
+step "Remove log rotation and log files"
+rm -f /etc/logrotate.d/pituner
+ok "Removed /etc/logrotate.d/pituner."
+if [ -d "/var/www/pituner" ]; then
+  if confirm "Delete /var/www/pituner (the local logs)?"; then
+    rm -rf /var/www/pituner
+    ok "Removed /var/www/pituner."
+  else
+    info "Kept /var/www/pituner."
+  fi
+fi
+
 # ------------------------------------------------------------- done
 echo ""
 ok "Uninstall complete."

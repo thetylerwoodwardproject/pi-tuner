@@ -256,6 +256,13 @@ usermod -aG plugdev pituner
 chown -R pituner:pituner "${APP_DIR}"
 chmod 600 "${APP_DIR}/icecast.conf"
 
+# Local rotating logs (tuner health / EAS / Zabbix mirror).
+LOG_DIR="/var/www/pituner"
+mkdir -p "${LOG_DIR}"
+chown pituner:pituner "${LOG_DIR}"
+[ -f "${SRC}/logrotate.conf" ] && install -m 644 "${SRC}/logrotate.conf" /etc/logrotate.d/pituner
+ok "Log directory ${LOG_DIR} and logrotate config installed."
+
 ok "Application files installed."
 
 # ------------------------------------------------------------- serials

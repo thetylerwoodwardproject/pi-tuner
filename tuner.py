@@ -34,12 +34,24 @@ import time
 
 DEFAULT_DIR = "/opt/pituner"
 TUNER_PATH = os.path.realpath(os.path.abspath(__file__))
+LOG_DIR = "/var/www/pituner"
 
 # ------------------------------------------------------------------- logging
+
+def log_file(name, msg):
+    """Append a timestamped line to /var/www/pituner/<name>. Best-effort."""
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+        with open(os.path.join(LOG_DIR, name), "a") as f:
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+    except OSError:
+        pass
+
 
 def log(msg, err=False):
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}",
           file=sys.stderr if err else sys.stdout, flush=True)
+    log_file("tuner.log", msg)
 
 
 # -------------------------------------------------------------- config files
@@ -255,8 +267,15 @@ class ZabbixSender:
     def _available(self):
         return self.enabled and bool(self.server)
 
-    def send(self, items):
-        """items: iterable of (key, value) pairs."""
+    def send(self, items, mirror=True):
+        """items: iterable of (key, value) pairs.
+
+        When mirror is True the payload is also appended to zabbix.log so a
+        local copy of everything sent to Zabbix (events only -- the periodic
+        heartbeat snapshot passes mirror=False) is kept on disk.
+        """
+        if mirror:
+            log_file("zabbix.log", json.dumps(dict(items)))
         if not self._available():
             return
         data = [{"host": self.hostname, "key": key, "value": str(value)}
@@ -285,7 +304,7 @@ class ZabbixSender:
             (self.key_status, json.dumps(status)),
             (self.key_active, active),
             (self.key_heartbeat, 1),
-        ])
+        ], mirror=False)
 
 
 # ------------------------------------------------- EAS attention-tone detection
@@ -366,10 +385,13 @@ def run_eas_detector(base_dir, name, sample_rate, channels):
         else:
             hits = 0
         if hits >= EAS_CONFIRM_WINDOWS:
-            log(f"EAS attention tone heard on {name}")
+            msg = f"EAS attention tone heard on {name}"
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}",
+                  file=sys.stderr, flush=True)
+            log_file("eas.log", msg)
             zbx.send([
                 (zbx.key_eas, 1),
-                (zbx.key_event, f"EAS attention tone heard on {name}"),
+                (zbx.key_event, msg),
             ])
             pulsing = True
             pulse_start = now

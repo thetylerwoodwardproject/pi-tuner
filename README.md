@@ -187,6 +187,19 @@ constants at the top of `tuner.py` (`EAS_TONE_RATIO`, `EAS_HOLD_SECS`,
 The service automatically restarts any station whose pipeline dies (dongle
 unplugged, Icecast unreachable, decode failure), backing off between attempts.
 
+## Local logs
+
+The Pi also keeps rotating logs on disk under `/var/www/pituner/`:
+
+| File         | Contents                                                             |
+|--------------|----------------------------------------------------------------------|
+| `tuner.log`  | Tuner health — station status changes, restarts, reloads             |
+| `eas.log`    | EAS attention-tone detections                                        |
+| `zabbix.log` | Mirror of what's sent to Zabbix (events only, not heartbeats)        |
+
+They rotate by size (10 MB, keeping 5 compressed copies) via
+`/etc/logrotate.d/pituner`. View them with e.g. `tail -f /var/www/pituner/tuner.log`.
+
 ## Project layout
 
 ```
