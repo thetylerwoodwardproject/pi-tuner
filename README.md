@@ -126,7 +126,7 @@ http://<raspberry-pi-ip>:8000/<mount>
 |-------------|-----------------|--------------------------------------------------|
 | `NAME`      | the file name   | Station name shown in your player                |
 | `BAND`      | `fm`            | `fm` (stereo) or `wx` (NOAA weather, mono)       |
-| `FREQUENCY` | — (required)    | Frequency in MHz                                 |
+| `FREQUENCY` | — (required)    | Frequency in MHz (FM 88–108, WX 162.400–162.550) |
 | `SERIAL`    | —               | Dongle serial (matched by number)                |
 | `GAIN`      | none (auto)     | Tuner gain in dB, e.g. `40.2`                    |
 | `MOUNT`     | `/<file name>`  | Icecast mount path for this station              |
