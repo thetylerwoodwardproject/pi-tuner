@@ -122,6 +122,22 @@ apt-get install -y \
 
 ok "System packages installed."
 
+# Free the RTL-SDR dongles from the kernel's DVB driver. Without this, the
+# dongles are claimed by the kernel and rtl_test/rtl_fm can't open them, so no
+# station ever tunes (the dongles appear "off").
+info "Blacklisting the DVB kernel driver (so rtl_fm/rtl_test can use the dongles)..."
+BLACKLIST_FILE="/etc/modprobe.d/rtl-sdr-blacklist.conf"
+cat > "${BLACKLIST_FILE}" <<'EOF'
+# Let rtl_fm/rtl_test own the RTL-SDR dongles instead of the DVB driver.
+blacklist dvb_usb_rtl28xxu
+blacklist rtl2832
+blacklist rtl2830
+EOF
+for mod in dvb_usb_rtl28xxu rtl2832 rtl2830 dvb_usb_v2 dvb_core; do
+  rmmod "$mod" 2>/dev/null || true
+done
+ok "DVB driver blacklisted and unloaded."
+
 # ------------------------------------------------------------- build demux
 step "2 of 8: Build FM stereo decoder (demux)"
 info "demux turns the raw FM signal into stereo audio with de-emphasis."
@@ -237,10 +253,10 @@ if [ "${INTERACTIVE}" = "1" ]; then
     press_enter "  Press Enter when ready... "
     default_serial="$(printf '0000100%d' "${i}")"
     s=$(ask "Serial number for dongle ${i}" "${default_serial}")
-    if rtl_eeprom -d 0 -s "${s}" >/dev/null 2>&1; then
+    if echo y | timeout 20 rtl_eeprom -d 0 -s "${s}"; then
       ok "Wrote serial ${s} to dongle ${i}."
     else
-      warn "rtl_eeprom failed for dongle ${i}. Check it is plugged in and not in use."
+      warn "rtl_eeprom failed (or timed out) for dongle ${i}. Check it is plugged in and not in use."
     fi
     SERIALS+=("${s}")
     echo ""
