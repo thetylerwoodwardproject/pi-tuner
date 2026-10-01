@@ -40,14 +40,16 @@ class GenreTests(unittest.TestCase):
             self.assertIn('-ice_genre "Weather"', cmd)
             self.assertNotIn("Country", cmd)
 
-    def test_fm_genre_only_when_given(self):
-        self.assertNotIn("-ice_genre", tuner.build_command(station(), ICE, 0, rbds=True))
+    def test_fm_genre_falls_back_to_radio(self):
+        for kw in ({"rbds": True}, {"rbds": False}, {"rbds": True, "genre": ""}):
+            self.assertIn('-ice_genre "Radio"', tuner.build_command(station(), ICE, 0, **kw))
         cmd = tuner.build_command(station(), ICE, 0, rbds=True, genre="Classic rock")
         self.assertIn('-ice_genre "Classic rock"', cmd)
 
     def test_genre_sanitized(self):
         cmd = tuner.build_command(station(), ICE, 0, genre='Rock"; rm -rf $HOME')
         self.assertNotIn('"; rm', cmd)
+        self.assertIn('-ice_genre "Rock rm -rf HOME"', cmd)
         self.assertNotIn("$", cmd.split("-ice_genre")[1].split("-content_type")[0])
 
     def test_rbds_flag_on_decoder(self):

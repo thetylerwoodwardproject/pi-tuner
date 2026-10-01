@@ -46,6 +46,7 @@ DEFAULT_DIR = "/opt/pituner"
 TUNER_PATH = os.path.realpath(os.path.abspath(__file__))
 LOG_DIR = "/var/www/pituner"
 WX_GENRE = "Weather"
+FM_DEFAULT_GENRE = "Radio"
 PTY_SCAN_SECS = 8.0
 
 # ------------------------------------------------------------------- logging
@@ -236,20 +237,18 @@ def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
                   rbds=False, genre=""):
     """Assemble the shell pipeline for one station.
 
-    ``genre`` is the Icecast genre for FM (the RBDS PTY found at startup, or
-    empty for none). WX streams always carry the genre "Weather".
+    ``genre`` is the Icecast genre for FM (the RBDS PTY found at startup);
+    FM falls back to "Radio" when there is none. WX is always "Weather".
     """
     freq_hz = int(cfg["freq"] * 1_000_000)
     name = _safe_name(cfg["name"])
-    if cfg["band"] == "wx":
-        genre = WX_GENRE
-    genre = _safe_name(genre)
+    genre = WX_GENRE if cfg["band"] == "wx" else (_safe_name(genre) or FM_DEFAULT_GENRE)
     ice_url = (f"icecast://source:{ice['password']}@{ice['host']}:"
                f"{ice['port']}{cfg['mount']}")
     ffmpeg = ("-nostdin -loglevel warning -acodec libmp3lame -b:a 128k -f mp3 "
               f'-ice_name "{name}" '
-              + (f'-ice_genre "{genre}" ' if genre else "")
-              + f"-content_type audio/mpeg {ice_url}")
+              f'-ice_genre "{genre}" '
+              f"-content_type audio/mpeg {ice_url}")
 
     if cfg["band"] == "wx":
         cmd = f"rtl_fm -d {device_index} -f {freq_hz} -s 25000 -E deemp -F 9"
@@ -517,7 +516,7 @@ def pty_from_json_line(line):
     """Return the RBDS program type from a redsea JSON line, or "" if none.
 
     redsea reports "No PTY" for 0 and "" or "Unknown" for reserved codes;
-    those all mean there is no genre to send.
+    those all mean there is no PTY to use as a genre.
     """
     try:
         data = json.loads(line)
@@ -679,7 +678,7 @@ class Tuner:
         genre = ""
         if rbds:
             genre = scan_pty(st.cfg, index)
-            log(f"station {st.name}: RBDS PTY: {genre or 'none heard, no genre'}")
+            log(f"station {st.name}: RBDS PTY: {genre or 'none heard, using ' + FM_DEFAULT_GENRE}")
         cmd = build_command(st.cfg, self.ice, index,
                             eas=self.eas_enabled, eas_dir=self.dir, rbds=rbds,
                             genre=genre)

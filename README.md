@@ -45,7 +45,7 @@ systemd keeps running.
 |---|---|
 | 📻 **FM and weather radio** | Stereo FM, plus NOAA Weather Radio in mono |
 | 🔊 **Icecast streaming** | Every station is a 128k MP3 stream on its own mount: `/tuner1`, `/tuner2`… |
-| 🏷️ **RBDS now-playing** | Decodes RadioText and the station name and shows `Artist - Title (PS)` in Icecast, with the station's program type (PTY) as the genre. WX streams get the genre `Weather` |
+| 🏷️ **RBDS now-playing** | Decodes RadioText and the station name and shows `Artist - Title (PS)` in Icecast, with the station's program type (PTY) as the genre (`Radio` if none). WX streams get the genre `Weather` |
 | ♻️ **Self-healing** | If a dongle is unplugged or a stream dies, that station restarts automatically, with backoff |
 | 🚨 **EAS tone detection** | Listens for the 853 + 960 Hz attention tone and alerts you through Zabbix |
 | 📟 **Zabbix alerts** | Optional status heartbeat and events, with no agent on the Pi |
@@ -270,7 +270,8 @@ rtl_fm ──┬──▶ demux ──▶ ffmpeg ──▶ Icecast  (audio)
   stream connects, so Pi-Tuner listens for the PTY for up to 8 seconds just
   before it starts each RBDS station. That adds a short delay at startup and
   after a reload, and a PTY that changes later is picked up at the next restart.
-  If no PTY is heard, or the station sends "No PTY", no genre is set.
+  If no PTY is heard, or the station sends "No PTY", the genre is `Radio`. FM
+  stations without `RBDS=true` are `Radio` too.
 - WX stations have no RBDS, and `RBDS=true` is ignored for the now-playing text.
   Their genre is always `Weather`, with or without `RBDS`.
 
@@ -299,7 +300,7 @@ Notes:
 | No audio / stream missing        | `http://<pi>:8000/status-json.xsl` in a browser    |
 | Changes didn't apply             | `sudo systemctl reload pituner.service`            |
 | No now-playing text              | `which redsea`, then `tail /var/www/pituner/rbds.log` |
-| Genre is blank on an FM station  | Station sent no PTY; check `journalctl -u pituner` for `RBDS PTY:` |
+| FM genre is just `Radio`         | No PTY heard; check `journalctl -u pituner` for `RBDS PTY:` |
 
 The service automatically restarts any station whose pipeline dies (dongle
 unplugged, Icecast unreachable, decode failure), backing off between attempts.
