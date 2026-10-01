@@ -71,8 +71,14 @@ ok "pituner.service stopped, disabled, and its unit file removed."
 step "Remove application files"
 if [ -d "${APP_DIR}" ]; then
   if confirm "Delete ${APP_DIR}?"; then
-    rm -rf "${APP_DIR}"
-    ok "Removed ${APP_DIR}."
+    if [ -n "$(find "${APP_DIR}/recordings" -type f 2>/dev/null | head -n1)" ] \
+       && ! confirm "${APP_DIR}/recordings holds audio recordings. Delete them too?"; then
+      find "${APP_DIR}" -mindepth 1 -maxdepth 1 ! -name recordings -exec rm -rf {} +
+      ok "Removed ${APP_DIR}, kept ${APP_DIR}/recordings."
+    else
+      rm -rf "${APP_DIR}"
+      ok "Removed ${APP_DIR}."
+    fi
   else
     info "Kept ${APP_DIR}."
   fi

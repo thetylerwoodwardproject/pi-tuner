@@ -19,15 +19,21 @@ Usage:
     tuner.py detect-eas --dir /opt/pituner <name> <rate> <channels>
              run the EAS attention-tone detector on raw s16le PCM from stdin.
 
+    tuner.py record --dir /opt/pituner <name> <rate> <channels>
+             record raw s16le PCM from stdin to 128 kbps MP3 files, one per
+             15 minutes, under <dir>/recordings/<name>/YYYY/MM/DD/.
+
     tuner.py rbds-meta --dir /opt/pituner <mount>
              read redsea JSON lines from stdin and push the decoded RBDS
              text to the Icecast now-playing metadata for <mount>.
 """
 import argparse
 import base64
+import datetime
 import json
 import math
 import os
+import queue
 import re
 import select
 import shutil
@@ -47,6 +53,9 @@ TUNER_PATH = os.path.realpath(os.path.abspath(__file__))
 LOG_DIR = "/var/www/pituner"
 WX_GENRE = "Weather"
 FM_DEFAULT_GENRE = "Radio"
+REC_CHUNK_SECS = 900
+REC_RETRY_SECS = 30
+REC_PRUNE_SECS = 3600
 PTY_SCAN_SECS = 8.0
 
 # ------------------------------------------------------------------- logging
@@ -105,6 +114,14 @@ def _parse_bool(value):
     return str(value or "").strip().lower() in ("1", "true", "yes", "on")
 
 
+def _parse_days(value):
+    """Whole days to keep recordings; 0 (keep forever) if unset or invalid."""
+    try:
+        return max(0, int(str(value).strip()))
+    except (TypeError, ValueError):
+        return 0
+
+
 def _safe_name(text):
     """Strip shell metacharacters so a name is safe inside a quoted ffmpeg arg."""
     return re.sub(r'["\'`$\\;|&<>()]', "", str(text)).strip()
@@ -122,6 +139,12 @@ def _eas_tee(name, sample_rate, channels, eas_dir):
     """Return the pipeline fragment that taps audio to the EAS tone detector."""
     return (f"tee --output-error=warn >(python3 {TUNER_PATH} detect-eas "
             f'--dir "{eas_dir}" "{name}" {sample_rate} {channels})')
+
+
+def _record_tee(name, sample_rate, channels, base_dir):
+    """Return the pipeline fragment that taps audio to the 15-minute recorder."""
+    return (f"tee --output-error=warn >(python3 {TUNER_PATH} record "
+            f'--dir "{base_dir}" "{name}" {sample_rate} {channels})')
 
 
 def _rbds_tee(mount, base_dir):
@@ -220,6 +243,8 @@ def load_stations(stations_dir):
             "gain": raw.get("gain", "").strip(),
             "mount": mount,
             "rbds": _parse_bool(raw.get("rbds")) and band == "fm",
+            "record": _parse_bool(raw.get("record")),
+            "record_keep_days": _parse_days(raw.get("record_keep_days")),
             "conf": filename,
         })
     return stations
@@ -234,12 +259,14 @@ def _fm_source(cfg, device_index):
 
 
 def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
-                  rbds=False, genre=""):
+                  rbds=False, genre="", record=True):
     """Assemble the shell pipeline for one station.
 
     ``genre`` is the Icecast genre for FM (the RBDS PTY found at startup);
     FM falls back to "Radio" when there is none. WX is always "Weather".
+    The recorder tap is added when ``record`` and the station's RECORD are set.
     """
+    record = record and bool(cfg.get("record"))
     freq_hz = int(cfg["freq"] * 1_000_000)
     name = _safe_name(cfg["name"])
     genre = WX_GENRE if cfg["band"] == "wx" else (_safe_name(genre) or FM_DEFAULT_GENRE)
@@ -252,6 +279,8 @@ def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
 
     if cfg["band"] == "wx":
         cmd = f"rtl_fm -d {device_index} -f {freq_hz} -s 25000 -E deemp -F 9"
+        if record:
+            cmd += f" | {_record_tee(name, 25000, 1, eas_dir)}"
         if eas:
             cmd += f" | {_eas_tee(name, 25000, 1, eas_dir)}"
         return cmd + f" | ffmpeg -f s16le -ar 25000 -ac 1 -i pipe:0 {ffmpeg}"
@@ -260,6 +289,8 @@ def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
     if rbds and cfg.get("rbds"):
         cmd += f" | {_rbds_tee(cfg['mount'], eas_dir)}"
     cmd += " | demux -r 192000 -R 48000 -d 75"
+    if record:
+        cmd += f" | {_record_tee(name, 48000, 2, eas_dir)}"
     if eas:
         cmd += f" | {_eas_tee(name, 48000, 2, eas_dir)}"
     return cmd + f" | ffmpeg -f s16le -ar 48000 -ac 2 -i pipe:0 {ffmpeg}"
@@ -438,6 +469,163 @@ def run_eas_detector(base_dir, name, sample_rate, channels):
             hits = 0
     if pulsing:  # pipeline ended mid-pulse: don't leave the item stuck at 1
         zbx.send([(zbx.key_eas, 0)])
+
+
+# --------------------------------------------------------------- recording
+
+def _rec_name(name):
+    """Filesystem-safe station name: spaces become '_', anything else odd goes."""
+    safe = re.sub(r"[^A-Za-z0-9._-]", "", str(name).strip().replace(" ", "_"))
+    return safe.strip(".") or "station"
+
+
+def recording_dir(base_dir, name):
+    return os.path.join(base_dir, "recordings", _rec_name(name))
+
+
+def recording_path(base_dir, name, when):
+    """recordings/NAME/YYYY/MM/DD/YYMMDD_HHMMSS_NAME.mp3 for a start time
+    (epoch seconds, Pi local time)."""
+    t = datetime.datetime.fromtimestamp(when)
+    safe = _rec_name(name)
+    return os.path.join(recording_dir(base_dir, name), t.strftime("%Y"),
+                        t.strftime("%m"), t.strftime("%d"),
+                        f"{t.strftime('%y%m%d_%H%M%S')}_{safe}.mp3")
+
+
+def next_boundary(now, seconds=REC_CHUNK_SECS):
+    """Epoch time of the next quarter-hour (:00/:15/:30/:45) after ``now``."""
+    minutes = seconds // 60
+    t = datetime.datetime.fromtimestamp(now)
+    t = t.replace(minute=(t.minute // minutes) * minutes, second=0, microsecond=0)
+    return (t + datetime.timedelta(minutes=minutes)).timestamp()
+
+
+class _Mp3Writer:
+    """One ffmpeg MP3 encoder fed from a bounded queue by its own thread, so a
+    slow disk or dead encoder can never back up into the audio pipeline."""
+
+    def __init__(self, path, rate, channels):
+        self.path = path
+        self.dropped = False
+        self.queue = queue.Queue(maxsize=120)  # ~60 s of 0.5 s chunks
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        self.proc = subprocess.Popen(
+            ["ffmpeg", "-nostdin", "-loglevel", "error", "-f", "s16le",
+             "-ar", str(rate), "-ac", str(channels), "-i", "pipe:0",
+             "-acodec", "libmp3lame", "-b:a", "128k", "-f", "mp3", path],
+            stdin=subprocess.PIPE)
+        self.thread = threading.Thread(target=self._pump, daemon=True)
+        self.thread.start()
+
+    def _pump(self):
+        broken = False
+        while True:
+            chunk = self.queue.get()
+            if chunk is None:
+                break
+            if broken:
+                continue
+            try:
+                self.proc.stdin.write(chunk)
+            except (OSError, ValueError):
+                broken = True
+                log_file("recordings.log", f"{self.path}: encoder write failed")
+        try:
+            self.proc.stdin.close()
+        except OSError:
+            pass
+        try:
+            self.proc.wait(timeout=15)
+        except subprocess.TimeoutExpired:
+            self.proc.kill()
+
+    @property
+    def alive(self):
+        return self.proc.poll() is None
+
+    def write(self, chunk):
+        try:
+            self.queue.put_nowait(chunk)
+        except queue.Full:
+            if not self.dropped:
+                self.dropped = True
+                log_file("recordings.log", f"{self.path}: disk too slow, dropping audio")
+
+    def close(self, wait=False):
+        self.queue.put(None)
+        if wait:
+            self.thread.join(timeout=20)
+
+
+def run_recorder(base_dir, name, rate, channels, stream=None,
+                 clock=time.time, boundary=next_boundary, chunk_secs=0.5):
+    """Read s16le PCM from stdin and write 128 kbps MP3 files, cut on every
+    quarter hour.
+
+    Best-effort and non-blocking: any failure (disk full, no ffmpeg, bad
+    permissions) is logged to recordings.log, the recorder retries shortly, and
+    stdin is always drained so the audio pipeline is never stalled.
+    """
+    stream = stream if stream is not None else sys.stdin.buffer
+    chunk = int(rate * chunk_secs) * 2 * channels
+    writer = None
+    closed = []  # finished writers still flushing; joined at EOF
+    next_cut = 0.0
+    while True:
+        raw = stream.read(chunk)
+        if not raw:
+            break
+        now = clock()
+        if writer is not None and not writer.alive:
+            log_file("recordings.log", f"{writer.path}: encoder exited early")
+            writer.close()
+            closed.append(writer)
+            writer, next_cut = None, now + REC_RETRY_SECS
+        if now >= next_cut:
+            if writer is not None:
+                writer.close()
+                closed.append(writer)
+                writer = None
+            closed = [w for w in closed if w.thread.is_alive()]
+            try:
+                writer = _Mp3Writer(recording_path(base_dir, name, now), rate, channels)
+                next_cut = boundary(now)
+            except (OSError, ValueError) as e:
+                log_file("recordings.log", f"{name}: cannot start recording: {e}")
+                next_cut = now + REC_RETRY_SECS
+        if writer is not None:
+            writer.write(raw)
+    if writer is not None:
+        writer.close(wait=True)
+    for w in closed:
+        w.thread.join(timeout=20)
+
+
+def prune_recordings(base_dir, name, keep_days, now=None):
+    """Delete a station's MP3s older than ``keep_days`` and any emptied date
+    folders. Returns the number of files removed. ``keep_days`` 0 does nothing."""
+    if keep_days <= 0:
+        return 0
+    now = time.time() if now is None else now
+    cutoff = now - keep_days * 86400
+    root = recording_dir(base_dir, name)
+    removed = 0
+    for dirpath, _dirs, files in os.walk(root, topdown=False):
+        for fname in files:
+            path = os.path.join(dirpath, fname)
+            try:
+                if fname.endswith(".mp3") and os.path.getmtime(path) < cutoff:
+                    os.remove(path)
+                    removed += 1
+            except OSError:
+                pass
+        if dirpath != root:
+            try:
+                os.rmdir(dirpath)  # only succeeds when empty
+            except OSError:
+                pass
+    return removed
 
 
 # ------------------------------------------------------------------- RBDS
@@ -731,6 +919,14 @@ class Tuner:
                 self.refresh_devices()
                 self.start_station(st)
 
+    def prune_recordings(self):
+        for st in self.stations:
+            days = st.cfg.get("record_keep_days", 0)
+            if st.cfg.get("record") and days > 0:
+                n = prune_recordings(self.dir, st.name, days)
+                if n:
+                    log(f"station {st.name}: removed {n} recording(s) older than {days} days")
+
     def send_heartbeat(self):
         statuses = {st.name: st.status for st in self.stations}
         self.zbx.snapshot(statuses)
@@ -752,6 +948,7 @@ class Tuner:
         for st in self.stations:
             self.start_station(st)
         self._next_heartbeat = time.time() + self.zbx.interval
+        next_prune = 0.0
         self.running = True
         while self.running:
             if self.reload_requested:
@@ -760,6 +957,9 @@ class Tuner:
                 self._next_heartbeat = time.time() + self.zbx.interval
                 continue
             self.poll()
+            if time.time() >= next_prune:
+                self.prune_recordings()
+                next_prune = time.time() + REC_PRUNE_SECS
             if time.time() >= self._next_heartbeat:
                 self.send_heartbeat()
                 self._next_heartbeat = time.time() + self.zbx.interval
@@ -805,6 +1005,8 @@ def run_check(base_dir):
             log(f"station {st.name}: device {index} -> {cmd}")
             if rbds:
                 log(f"station {st.name}: genre comes from the RBDS PTY, read at startup")
+            if st.cfg.get("record"):
+                log(f"station {st.name}: recording to {recording_dir(tuner.dir, st.name)}")
     return 0
 
 
@@ -818,6 +1020,17 @@ def _main_detect_eas(argv):
     parser.add_argument("channels", type=int, help="audio channel count (1 or 2)")
     args = parser.parse_args(argv)
     run_eas_detector(args.dir, args.name, args.rate, args.channels)
+    return 0
+
+
+def _main_record(argv):
+    parser = argparse.ArgumentParser(prog="tuner.py record")
+    parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
+    parser.add_argument("name", help="station name (used in the file names)")
+    parser.add_argument("rate", type=int, help="PCM sample rate in Hz")
+    parser.add_argument("channels", type=int, help="audio channel count (1 or 2)")
+    args = parser.parse_args(argv)
+    run_recorder(args.dir, args.name, args.rate, args.channels)
     return 0
 
 
@@ -835,6 +1048,8 @@ def main(argv=None):
         argv = sys.argv[1:]
     if argv and argv[0] == "detect-eas":
         return _main_detect_eas(argv[1:])
+    if argv and argv[0] == "record":
+        return _main_record(argv[1:])
     if argv and argv[0] == "rbds-meta":
         return _main_rbds_meta(argv[1:])
 

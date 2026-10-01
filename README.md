@@ -41,15 +41,40 @@ Icecast server where anyone on your network can listen. No web interface, no
 database: just a folder of text config files and one Python program that
 systemd keeps running.
 
-| | |
-|---|---|
-| 📻 **FM and weather radio** | Stereo FM, plus NOAA Weather Radio in mono |
-| 🔊 **Icecast streaming** | Every station is a 128k MP3 stream on its own mount: `/tuner1`, `/tuner2`… |
-| 🏷️ **RBDS now-playing** | Decodes RadioText and the station name and shows `Artist - Title (PS)` in Icecast, with the station's program type (PTY) as the genre (`Radio` if none). WX streams get the genre `Weather` |
-| ♻️ **Self-healing** | If a dongle is unplugged or a stream dies, that station restarts automatically, with backoff |
-| 🚨 **EAS tone detection** | Listens for the 853 + 960 Hz attention tone and alerts you through Zabbix |
-| 📟 **Zabbix alerts** | Optional status heartbeat and events, with no agent on the Pi |
-| 🧰 **One-line installer** | Installs packages, builds the decoders, configures Icecast and walks you through your first stations |
+<table>
+  <tr>
+    <td>📻&nbsp;<b>FM&nbsp;and&nbsp;weather&nbsp;radio</b></td>
+    <td>Stereo FM, plus NOAA Weather Radio in mono</td>
+  </tr>
+  <tr>
+    <td>🔊&nbsp;<b>Icecast&nbsp;streaming</b></td>
+    <td>Every station is a 128k MP3 stream on its own mount: <code>/tuner1</code>, <code>/tuner2</code>…</td>
+  </tr>
+  <tr>
+    <td>🏷️&nbsp;<b>RBDS&nbsp;now-playing</b></td>
+    <td>Decodes RadioText and the station name and shows <code>Artist - Title (PS)</code> in Icecast. The station's program type (PTY) becomes the genre (<code>Radio</code> if none), and WX streams get <code>Weather</code></td>
+  </tr>
+  <tr>
+    <td>⏺️&nbsp;<b>Recording</b></td>
+    <td>Optionally saves any station to disk as 128&nbsp;kbps MP3 files, cut every 15 minutes into dated folders</td>
+  </tr>
+  <tr>
+    <td>♻️&nbsp;<b>Self-healing</b></td>
+    <td>If a dongle is unplugged or a stream dies, that station restarts automatically, with backoff</td>
+  </tr>
+  <tr>
+    <td>🚨&nbsp;<b>EAS&nbsp;tone&nbsp;detection</b></td>
+    <td>Listens for the 853 + 960 Hz attention tone and alerts you through Zabbix</td>
+  </tr>
+  <tr>
+    <td>📟&nbsp;<b>Zabbix&nbsp;alerts</b></td>
+    <td>Optional status heartbeat and events, with no agent on the Pi</td>
+  </tr>
+  <tr>
+    <td>🧰&nbsp;<b>One-line&nbsp;installer</b></td>
+    <td>Installs packages, builds the decoders, configures Icecast and walks you through your first stations</td>
+  </tr>
+</table>
 
 ## How it works
 
@@ -150,6 +175,7 @@ FREQUENCY=98.1
 SERIAL=00001001
 GAIN=40.2          # dB; delete this line for auto-gain
 RBDS=true          # optional, fm only; RBDS text -> Icecast now-playing
+RECORD=true        # optional; save 15-minute MP3 recordings
 # ─── end user settings ─────────────────────────────
 ```
 
@@ -181,6 +207,8 @@ http://<raspberry-pi-ip>:8000/<mount>
 | `SERIAL`    |:               | Dongle serial (matched by number)                |
 | `GAIN`      | none (auto)     | Tuner gain in dB, e.g. `40.2`                    |
 | `RBDS`      | `false`         | FM only: send RBDS text and PTY genre to Icecast |
+| `RECORD`    | `false`         | Save this station to 15-minute MP3 files         |
+| `RECORD_KEEP_DAYS` | keep all | Delete recordings older than this many days      |
 | `MOUNT`     | `/tuner1`, `/tuner2`, … | Icecast mount, numbered in file order    |
 
 ### `icecast.conf` (shared)
@@ -290,6 +318,37 @@ Notes:
 - Like the EAS detector, the RBDS helper is best-effort and can never interrupt
   the audio.
 
+## Recording (optional)
+
+Pi-Tuner can keep a log of what a station broadcast. Add `RECORD=true` to a
+station's file (the installer asks you), then reload. The audio is saved as
+**128 kbps MP3**, the same format as the Icecast stream, in **15-minute files**:
+
+```
+/opt/pituner/recordings/STATION_NAME/YYYY/MM/DD/YYMMDD_HHMMSS_STATION_NAME.mp3
+```
+
+For example:
+
+```
+/opt/pituner/recordings/WXYZ-FM/2026/03/05/260305_140000_WXYZ-FM.mp3
+/opt/pituner/recordings/WXYZ-FM/2026/03/05/260305_141500_WXYZ-FM.mp3
+```
+
+- **HHMMSS is when that file began**, in the Pi's local time (check it with
+  `timedatectl`).
+- Files are cut on the clock, at :00, :15, :30 and :45. The first file after
+  Pi-Tuner starts, reloads or restarts a station is shorter, and its name shows
+  the time it actually began.
+- Spaces in a station name become underscores in the folder and file names.
+- Recording runs beside the stream and can't interrupt it. If the disk fills or
+  the encoder fails, the problem is logged to `recordings.log` and the stream
+  keeps playing. WX stations record the same mono audio that they stream.
+- **Plan for disk space.** Each station uses about 1.4 GB a day (58 MB an hour).
+  Set `RECORD_KEEP_DAYS=14` in the station file to delete files older than 14
+  days (and any empty date folders). Pi-Tuner checks hourly. Leave it out to
+  keep everything.
+
 ## Troubleshooting
 
 | Problem                          | Check                                              |
@@ -301,6 +360,7 @@ Notes:
 | Changes didn't apply             | `sudo systemctl reload pituner.service`            |
 | No now-playing text              | `which redsea`, then `tail /var/www/pituner/rbds.log` |
 | FM genre is just `Radio`         | No PTY heard; check `journalctl -u pituner` for `RBDS PTY:` |
+| No recordings                    | `RECORD=true` set and reloaded? `tail /var/www/pituner/recordings.log`; `df -h` |
 
 The service automatically restarts any station whose pipeline dies (dongle
 unplugged, Icecast unreachable, decode failure), backing off between attempts.
@@ -315,6 +375,7 @@ The Pi also keeps rotating logs on disk under `/var/www/pituner/`:
 | `eas.log`    | EAS attention-tone detections                                        |
 | `zabbix.log` | Mirror of what's sent to Zabbix (events only, not heartbeats)        |
 | `rbds.log`   | RBDS now-playing updates sent to Icecast, and any update failures    |
+| `recordings.log` | Recording problems (disk full, encoder errors)                   |
 
 They rotate by size (10 MB, keeping 5 compressed copies) via
 `/etc/logrotate.d/pituner`. View them with e.g. `tail -f /var/www/pituner/tuner.log`.
@@ -327,6 +388,7 @@ They rotate by size (10 MB, keeping 5 compressed copies) via
   icecast.conf        # shared Icecast connection
   zabbix.conf         # Zabbix trapper settings (optional)
   stations/           # one *.conf file per station
+  recordings/         # 15-minute MP3 recordings (when RECORD=true)
     fm-example.conf
     wx-example.conf
   zabbix_template.xml # import into Zabbix (optional)
