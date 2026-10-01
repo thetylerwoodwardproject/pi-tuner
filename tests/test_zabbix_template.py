@@ -87,7 +87,7 @@ class TemplateTests(unittest.TestCase):
     def test_expected_alerts_exist(self):
         names = " | ".join(t.findtext("name") for t in self.root.iter("trigger_prototype"))
         for wanted in ("is down", "serial not found", "EAS attention tone", "restarting repeatedly",
-                       "Dead air", "recording stalled", "Overmodulation"):
+                       "Dead air", "recording stalled"):
             self.assertIn(wanted, names)
         globals_ = " | ".join(t.findtext("name") for t in self.template.findall("items/item/triggers/trigger"))
         self.assertIn("heartbeat lost", globals_)
@@ -98,7 +98,6 @@ class TemplateTests(unittest.TestCase):
         self.assertEqual(values["{$PITUNER.SILENCE.DB}"], "-60")
         self.assertIn("{$PITUNER.SILENCE.TIME}", values)
         self.assertIn("{$PITUNER.REC.STALE}", values)
-        self.assertEqual(values["{$PITUNER.OVERMOD.PCT}"], "105")
 
     def test_value_map_used_by_up_exists(self):
         up = [p for p in self.rule.findall("item_prototypes/item_prototype")

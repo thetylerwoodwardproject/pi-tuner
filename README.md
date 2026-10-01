@@ -322,7 +322,6 @@ station name is in each item's name, e.g. "WLSU: audio level":
 | `rbds.rt`, `rbds.ps` | the current RBDS RadioText and station name (PS) |
 | `eas` | 1 for about 10 seconds when the EAS attention tone is heard |
 | `level` | audio level in dBFS, one value every 10 seconds |
-| `deviation`, `modulation` | peak carrier deviation in kHz and as a percent of 100% modulation, one reading every 10 seconds (see below) |
 | `restarts` | how many times the tuner's pipeline has restarted since the service started |
 | `recording`, `recording.age` | whether it records, and seconds since its newest recording file was written |
 
@@ -330,36 +329,10 @@ Host-wide items: last event, tuners streaming, heartbeat, and an "EAS on any tun
 
 **Triggers.** Per tuner: *is down* (not streaming for 2 minutes), *serial not
 found*, *EAS attention tone heard*, *restarting repeatedly* (3+ restarts in 15
-minutes), *dead air* (level below the threshold while streaming), *recording
-stalled*, and *overmodulation* (above the limit in at least 3 of the last 5
-minutes of readings). Host-wide: *heartbeat lost* and *no stations streaming*.
-Tune them with template macros on the host:
-`{$PITUNER.SILENCE.DB}` (default `-60`), `{$PITUNER.SILENCE.TIME}` (`1m`),
-`{$PITUNER.REC.STALE}` (`300` seconds) and `{$PITUNER.OVERMOD.PCT}` (`105`).
-
-**Deviation and modulation.** Pi-Tuner measures how far each station's carrier
-swings from the demodulated signal and reports the highest peak every 10 seconds,
-in kHz and as a percent of 100% modulation:
-
-| | 100% modulation | Notes |
-|---|---|---|
-| FM broadcast | 75 kHz | Measured on the whole composite signal (stereo pilot and RBDS included), like a modulation monitor. |
-| NOAA Weather Radio (WX) | about 5 kHz | Narrowband FM, measured after de-emphasis, so high-pitched peaks read a little low. |
-
-> [!WARNING]
-> **Deviation and modulation readings are less accurate when a station's signal
-> is weak.** Noise adds false peaks, so readings can run high (even over 100%)
-> and jump around. Pi-Tuner ignores a single noise click, not sustained noise.
-> Use a good antenna and a strong, clean signal.
->
-> Treat the numbers as an indicator and a trend, not a calibrated modulation
-> monitor, and don't use them for compliance reporting.
-
-Change the references with `FM_FULL_DEVIATION_KHZ` and `WX_FULL_DEVIATION_KHZ` in
-`zabbix.conf`; `DEVIATION_MONITOR=false` turns the measurement off. The kHz
-conversion is exact and the dongle's frequency error is removed automatically.
-Overmodulation fires at 105% by default, since processed audio normally peaks at
-100%. A weak or noisy signal can trigger it falsely, so check signal quality first.
+minutes), *dead air* (level below the threshold while streaming) and
+*recording stalled*. Host-wide: *heartbeat lost* and *no stations streaming*.
+Tune them with template macros on the host: `{$PITUNER.SILENCE.DB}` (default
+`-60`), `{$PITUNER.SILENCE.TIME}` (`1m`) and `{$PITUNER.REC.STALE}` (`300` seconds).
 
 **How it fills in.** Every `INTERVAL` seconds (default 60) Pi-Tuner sends the
 tuner list and values. Zabbix creates the items on first sight, so values appear
@@ -367,10 +340,10 @@ within a couple of minutes. Removed tuners are deleted after 7 days.
 `LEVEL_MONITOR=false` in `zabbix.conf` stops audio levels (and the level-meter
 process on each station).
 
-**Updating from an older template.** The old single `pituner.status` item and its
-two triggers are gone. Import the new template with *Delete missing* ticked (or
-delete the old `Pi-Tuner` template first), and run `sudo pituner upgrade-config`
-so `zabbix.conf` gets `LEVEL_MONITOR`.
+**Updating from an older template.** Import the new template with *Delete missing*
+ticked (or delete the old `Pi-Tuner` template first), which also drops the old
+`pituner.status` item and any deviation and modulation items. Then run
+`sudo pituner upgrade-config` so `zabbix.conf` gets `LEVEL_MONITOR`.
 
 An unreachable Zabbix never affects tuning; sends are best-effort and logged.
 

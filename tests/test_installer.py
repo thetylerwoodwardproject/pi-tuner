@@ -222,7 +222,6 @@ class StaticTests(unittest.TestCase):
         self.assertEqual(INSTALL.count("EAS_DETECT=true"), 2)
         self.assertEqual(INSTALL.count("KEY_EAS=pituner.eas"), 2)
         self.assertEqual(INSTALL.count("LEVEL_MONITOR=true"), 2)
-        self.assertEqual(INSTALL.count("DEVIATION_MONITOR=true"), 2)
         self.assertNotIn("KEY_STATUS", INSTALL)          # the JSON status item is gone
 
     def test_unit_supports_reload(self):
