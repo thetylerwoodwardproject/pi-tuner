@@ -45,7 +45,7 @@ systemd keeps running.
 |---|---|
 | 📻 **FM and weather radio** | Stereo FM, plus NOAA Weather Radio in mono |
 | 🔊 **Icecast streaming** | Every station is a 128k MP3 stream on its own mount: `/tuner1`, `/tuner2`… |
-| 🏷️ **RBDS now-playing** | Decodes RadioText and the station name and shows `Artist - Title (PS)` in Icecast |
+| 🏷️ **RBDS now-playing** | Decodes RadioText and the station name and shows `Artist - Title (PS)` in Icecast, with the station's program type (PTY) as the genre (`Radio` if none). WX streams get the genre `Weather` |
 | ♻️ **Self-healing** | If a dongle is unplugged or a stream dies, that station restarts automatically, with backoff |
 | 🚨 **EAS tone detection** | Listens for the 853 + 960 Hz attention tone and alerts you through Zabbix |
 | 📟 **Zabbix alerts** | Optional status heartbeat and events, with no agent on the Pi |
@@ -180,7 +180,7 @@ http://<raspberry-pi-ip>:8000/<mount>
 | `FREQUENCY` |: (required)    | Frequency in MHz (FM 88–108, WX 162.400–162.550) |
 | `SERIAL`    |:               | Dongle serial (matched by number)                |
 | `GAIN`      | none (auto)     | Tuner gain in dB, e.g. `40.2`                    |
-| `RBDS`      | `false`         | FM only: send RBDS text to Icecast now-playing   |
+| `RBDS`      | `false`         | FM only: send RBDS text and PTY genre to Icecast |
 | `MOUNT`     | `/tuner1`, `/tuner2`, … | Icecast mount, numbered in file order    |
 
 ### `icecast.conf` (shared)
@@ -265,10 +265,18 @@ rtl_fm ──┬──▶ demux ──▶ ffmpeg ──▶ Icecast  (audio)
   station file. (Icecast only sets the name when a source connects.)
 - Updates use the `source` login and `SOURCE_PASSWORD` from `icecast.conf`. To use
   the admin login instead, set `ADMIN_USER` and `ADMIN_PASSWORD` there.
-- WX stations have no RBDS, and `RBDS=true` is ignored on them.
+- The Icecast **genre** is the station's RBDS **PTY** (program type), such as
+  `Country`, `Top 40` or `Classic rock`. Icecast only reads the genre when a
+  stream connects, so Pi-Tuner listens for the PTY for up to 8 seconds just
+  before it starts each RBDS station. That adds a short delay at startup and
+  after a reload, and a PTY that changes later is picked up at the next restart.
+  If no PTY is heard, or the station sends "No PTY", the genre is `Radio`. FM
+  stations without `RBDS=true` are `Radio` too.
+- WX stations have no RBDS, and `RBDS=true` is ignored for the now-playing text.
+  Their genre is always `Weather`, with or without `RBDS`.
 
 To check it's working, open `http://<pi>:8000/status-json.xsl` (look for `title`
-on the mount) or watch `tail -f /var/www/pituner/rbds.log`.
+and `genre` on the mount) or watch `tail -f /var/www/pituner/rbds.log`.
 
 Notes:
 
@@ -292,6 +300,7 @@ Notes:
 | No audio / stream missing        | `http://<pi>:8000/status-json.xsl` in a browser    |
 | Changes didn't apply             | `sudo systemctl reload pituner.service`            |
 | No now-playing text              | `which redsea`, then `tail /var/www/pituner/rbds.log` |
+| FM genre is just `Radio`         | No PTY heard; check `journalctl -u pituner` for `RBDS PTY:` |
 
 The service automatically restarts any station whose pipeline dies (dongle
 unplugged, Icecast unreachable, decode failure), backing off between attempts.

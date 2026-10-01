@@ -29,6 +29,7 @@ import json
 import math
 import os
 import re
+import select
 import shutil
 import signal
 import socket
@@ -44,6 +45,9 @@ import urllib.request
 DEFAULT_DIR = "/opt/pituner"
 TUNER_PATH = os.path.realpath(os.path.abspath(__file__))
 LOG_DIR = "/var/www/pituner"
+WX_GENRE = "Weather"
+FM_DEFAULT_GENRE = "Radio"
+PTY_SCAN_SECS = 8.0
 
 # ------------------------------------------------------------------- logging
 
@@ -122,7 +126,7 @@ def _eas_tee(name, sample_rate, channels, eas_dir):
 
 def _rbds_tee(mount, base_dir):
     """Return the pipeline fragment that taps the 192 kHz MPX to RBDS decoding."""
-    return (f"tee --output-error=warn >(redsea -r 192000 2>/dev/null | "
+    return (f"tee --output-error=warn >(redsea -u -r 192000 2>/dev/null | "
             f'python3 {TUNER_PATH} rbds-meta --dir "{base_dir}" "{mount}")')
 
 
@@ -221,15 +225,30 @@ def load_stations(stations_dir):
     return stations
 
 
+def _fm_source(cfg, device_index):
+    """rtl_fm command that outputs the 192 kHz FM-demodulated MPX signal."""
+    freq_hz = int(cfg["freq"] * 1_000_000)
+    gain = f"-g {cfg['gain']} " if cfg.get("gain") else ""
+    return (f"rtl_fm -d {device_index} -M fm -l 0 -A std -p 0 -s 192000 {gain}"
+            f"-F 9 -f {freq_hz}")
+
+
 def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
-                  rbds=False):
-    """Assemble the shell pipeline for one station."""
+                  rbds=False, genre=""):
+    """Assemble the shell pipeline for one station.
+
+    ``genre`` is the Icecast genre for FM (the RBDS PTY found at startup);
+    FM falls back to "Radio" when there is none. WX is always "Weather".
+    """
     freq_hz = int(cfg["freq"] * 1_000_000)
     name = _safe_name(cfg["name"])
+    genre = WX_GENRE if cfg["band"] == "wx" else (_safe_name(genre) or FM_DEFAULT_GENRE)
     ice_url = (f"icecast://source:{ice['password']}@{ice['host']}:"
                f"{ice['port']}{cfg['mount']}")
     ffmpeg = ("-nostdin -loglevel warning -acodec libmp3lame -b:a 128k -f mp3 "
-              f'-ice_name "{name}" -content_type audio/mpeg {ice_url}')
+              f'-ice_name "{name}" '
+              f'-ice_genre "{genre}" '
+              f"-content_type audio/mpeg {ice_url}")
 
     if cfg["band"] == "wx":
         cmd = f"rtl_fm -d {device_index} -f {freq_hz} -s 25000 -E deemp -F 9"
@@ -237,9 +256,7 @@ def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
             cmd += f" | {_eas_tee(name, 25000, 1, eas_dir)}"
         return cmd + f" | ffmpeg -f s16le -ar 25000 -ac 1 -i pipe:0 {ffmpeg}"
 
-    gain = f"-g {cfg['gain']} " if cfg.get("gain") else ""
-    cmd = (f"rtl_fm -d {device_index} -M fm -l 0 -A std -p 0 -s 192000 {gain}"
-           f"-F 9 -f {freq_hz}")
+    cmd = _fm_source(cfg, device_index)
     if rbds and cfg.get("rbds"):
         cmd += f" | {_rbds_tee(cfg['mount'], eas_dir)}"
     cmd += " | demux -r 192000 -R 48000 -d 75"
@@ -495,6 +512,75 @@ def run_rbds_meta(base_dir, mount, stream=None, updater=update_icecast_metadata)
             log_file("rbds.log", f"{mount}: now playing: {song}")
 
 
+def pty_from_json_line(line):
+    """Return the RBDS program type from a redsea JSON line, or "" if none.
+
+    redsea reports "No PTY" for 0 and "" or "Unknown" for reserved codes;
+    those all mean there is no PTY to use as a genre.
+    """
+    try:
+        data = json.loads(line)
+    except ValueError:
+        return None
+    if not isinstance(data, dict) or "prog_type" not in data:
+        return None
+    pty = _clean_rds_text(data["prog_type"])
+    return "" if pty.lower() in ("", "no pty", "unknown") else pty
+
+
+def scan_pty(cfg, device_index, timeout=PTY_SCAN_SECS):
+    """Listen briefly to an FM station and return its RBDS PTY ("" if none).
+
+    Icecast reads the genre only when the source connects, so this runs before
+    the real pipeline starts. The dongle is released before returning.
+    """
+    cmd = f"{_fm_source(cfg, device_index)} | redsea -u -r 192000 2>/dev/null"
+    proc = subprocess.Popen(cmd, shell=True, executable="/bin/bash",
+                            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                            start_new_session=True)
+    pty = ""
+    buf = b""
+    fd = proc.stdout.fileno()
+    deadline = time.time() + timeout
+    try:
+        # Read the raw fd: select() can't see lines already pulled into a
+        # buffered reader's buffer.
+        while pty == "" and time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [],
+                                        max(0.0, deadline - time.time()))
+            if not ready:
+                break
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                break
+            buf += chunk
+            while b"\n" in buf:
+                line, buf = buf.split(b"\n", 1)
+                found = pty_from_json_line(line.decode("utf-8", "replace"))
+                if found is not None:
+                    pty = found
+                    break
+            else:
+                continue
+            break
+    finally:
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.terminate()
+        try:
+            proc.wait(timeout=3)
+        except subprocess.TimeoutExpired:
+            try:
+                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+            except (ProcessLookupError, PermissionError, OSError):
+                proc.kill()
+            proc.wait()
+        proc.stdout.close()
+    time.sleep(0.5)  # let the USB device settle before it's reopened
+    return pty
+
+
 # ---------------------------------------------------------------- station
 
 class Station:
@@ -589,8 +675,13 @@ class Tuner:
             st.retry_at = time.time() + 10
             return
         rbds = bool(st.cfg.get("rbds")) and self.rbds_available()
+        genre = ""
+        if rbds:
+            genre = scan_pty(st.cfg, index)
+            log(f"station {st.name}: RBDS PTY: {genre or 'none heard, using ' + FM_DEFAULT_GENRE}")
         cmd = build_command(st.cfg, self.ice, index,
-                            eas=self.eas_enabled, eas_dir=self.dir, rbds=rbds)
+                            eas=self.eas_enabled, eas_dir=self.dir, rbds=rbds,
+                            genre=genre)
         try:
             st.proc = subprocess.Popen(
                 cmd, shell=True, stdout=subprocess.DEVNULL,
@@ -712,6 +803,8 @@ def run_check(base_dir):
             cmd = build_command(st.cfg, tuner.ice, index,
                                 eas=tuner.eas_enabled, eas_dir=tuner.dir, rbds=rbds)
             log(f"station {st.name}: device {index} -> {cmd}")
+            if rbds:
+                log(f"station {st.name}: genre comes from the RBDS PTY, read at startup")
     return 0
 
 
