@@ -18,6 +18,12 @@
 # a temp dir; when run from a clone it installs from beside tuner.py.
 # If stdin is not a terminal (e.g. piped `curl | bash`), prompts are skipped
 # and the example station files are deployed instead.
+#
+# Re-running over an existing install asks whether to Upgrade (keep every
+# setting, the default), Reconfigure (upgrade, then open `pituner config`) or
+# start Fresh (reset Icecast and settings). Skip the question with --upgrade,
+# --reconfigure or --fresh (or PITUNER_MODE=upgrade|reconfigure|fresh). Your
+# settings are always backed up to /opt/pituner/backups/ first.
 
 set -uo pipefail
 
@@ -139,15 +145,78 @@ if [ ! -f "${SRC}/tuner.py" ]; then
   die "tuner.py not found next to install.sh (looking in ${SRC}). Run from the project directory."
 fi
 
+# ------------------------------------------------------------- install mode
+MODE="${PITUNER_MODE:-}"
+for arg in "$@"; do
+  case "${arg}" in
+    --upgrade)     MODE="upgrade" ;;
+    --reconfigure) MODE="reconfigure" ;;
+    --fresh)       MODE="fresh" ;;
+    -h|--help)
+      sed -n '2,/^set -uo/p' "${BASH_SOURCE[0]}" 2>/dev/null | sed '$d' | sed 's/^# \{0,1\}//'
+      exit 0 ;;
+    *) die "Unknown option '${arg}'. Use --upgrade, --reconfigure or --fresh." ;;
+  esac
+done
+
+# An existing install = the app, or any settings file, is already in place.
+EXISTING=0
+if [ -f "${APP_DIR}/tuner.py" ] \
+   || compgen -G "${APP_DIR}/*.conf" >/dev/null 2>&1 \
+   || compgen -G "${APP_DIR}/stations/*.conf" >/dev/null 2>&1; then
+  EXISTING=1
+fi
+
+if [ "${EXISTING}" = "1" ]; then
+  case "${MODE}" in
+    upgrade|reconfigure|fresh) ;;
+    "")
+      if [ "${INTERACTIVE}" = "1" ]; then
+        echo ""
+        echo "Pi-Tuner is already installed in ${APP_DIR}."
+        echo "  1) Upgrade       keep all my settings, stations and Icecast passwords (recommended)"
+        echo "  2) Reconfigure   upgrade, then open the settings menu"
+        echo "  3) Fresh         reset Icecast and settings, then set everything up again"
+        choice=$(ask "Choose" "1")
+        case "${choice}" in
+          2) MODE="reconfigure" ;;
+          3) MODE="fresh" ;;
+          *) MODE="upgrade" ;;
+        esac
+      else
+        MODE="upgrade"
+      fi ;;
+    *) die "Unknown mode '${MODE}'. Use upgrade, reconfigure or fresh." ;;
+  esac
+  if [ "${MODE}" = "fresh" ] && [ "${INTERACTIVE}" = "1" ] \
+     && ! confirm "Fresh install resets Icecast and your Pi-Tuner settings (a backup is kept). Continue?"; then
+    die "Cancelled. Nothing was changed."
+  fi
+  BACKUP_NOTE="$(python3 "${SRC}/tuner.py" backup-config --dir "${APP_DIR}" 2>&1 || true)"
+else
+  MODE="first"
+  BACKUP_NOTE=""
+fi
+KEEP_SETTINGS=0
+if [ "${MODE}" = "upgrade" ] || [ "${MODE}" = "reconfigure" ]; then
+  KEEP_SETTINGS=1
+fi
+
 clear 2>/dev/null || true
 echo -e "${BOLD}${GREEN}Pi-Tuner installer${RESET}"
 echo "A minimal multi-station SDR streamer for Raspberry Pi."
 echo "This will install dependencies, set up Icecast, configure your stations,"
 echo "and verify everything is running."
 echo ""
-warn "This RESETS your Icecast configuration: it regenerates the source and"
-warn "admin passwords (overwriting any existing Icecast setup) and restarts"
-warn "Icecast. If you use Icecast for other streams, back it up first."
+if [ "${KEEP_SETTINGS}" = "1" ]; then
+  info "Mode: ${MODE}. Your settings, stations and Icecast configuration are kept."
+  [ -n "${BACKUP_NOTE}" ] && info "${BACKUP_NOTE}"
+else
+  warn "This RESETS your Icecast configuration: it regenerates the source and"
+  warn "admin passwords (overwriting any existing Icecast setup) and restarts"
+  warn "Icecast. If you use Icecast for other streams, back it up first."
+  [ -n "${BACKUP_NOTE}" ] && info "${BACKUP_NOTE}"
+fi
 echo ""
 
 # ------------------------------------------------------------- dependencies
@@ -258,38 +327,58 @@ fi
 
 # ------------------------------------------------------------- icecast
 step "3 of 8: Configure Icecast"
-warn "This resets the Icecast source/admin passwords and restarts Icecast,"
-warn "replacing any existing Icecast settings."
-if [ "${INTERACTIVE}" = "1" ] && ! confirm "Reset Icecast and continue?"; then
-  die "Installation cancelled. The Icecast reset is required so the tuner can stream."
-fi
-
-info "Generating a random source password and applying it to Icecast."
-
 ICECAST_XML="/etc/icecast2/icecast.xml"
-SOURCE_PASS="$(gen_pass)"
-ADMIN_PASS="$(gen_pass)"
 
-if [ ! -f "${ICECAST_XML}" ]; then
-  warn "Icecast config not found at ${ICECAST_XML}. If you installed Icecast elsewhere,"
-  warn "set the source password manually and update ${APP_DIR}/icecast.conf."
-else
-  if grep -q '<source-password>' "${ICECAST_XML}"; then
-    sed -i "s|<source-password>.*</source-password>|<source-password>${SOURCE_PASS}</source-password>|" "${ICECAST_XML}"
-    sed -i "s|<admin-password>.*</admin-password>|<admin-password>${ADMIN_PASS}</admin-password>|" "${ICECAST_XML}"
-    ok "Icecast source/admin password set."
-  else
-    warn "Could not find <source-password> in icecast.xml; leaving Icecast config unchanged."
+if [ "${KEEP_SETTINGS}" = "1" ]; then
+  info "Keeping your existing Icecast configuration and passwords."
+  SOURCE_PASS="$(sed -n 's/^SOURCE_PASSWORD=//p' "${APP_DIR}/icecast.conf" 2>/dev/null | head -n1)"
+  if [ -z "${SOURCE_PASS}" ] && [ -f "${ICECAST_XML}" ]; then
+    SOURCE_PASS="$(sed -n 's|.*<source-password>\(.*\)</source-password>.*|\1|p' "${ICECAST_XML}" | head -n1)"
+    [ -n "${SOURCE_PASS}" ] && info "icecast.conf had no password; using the one from ${ICECAST_XML}."
   fi
-fi
-
-systemctl enable icecast2 >/dev/null 2>&1 || warn "Could not enable icecast2 (may need manual start)."
-systemctl restart icecast2 >/dev/null 2>&1 || warn "Could not restart icecast2."
-sleep 1
-if curl -sf --max-time 5 http://localhost:8000/status-json.xsl >/dev/null; then
-  ok "Icecast is responding on port 8000."
+  ADMIN_PASS=""
+  systemctl enable icecast2 >/dev/null 2>&1 || warn "Could not enable icecast2 (may need manual start)."
+  systemctl start icecast2 >/dev/null 2>&1 || warn "Could not start icecast2."
+  sleep 1
+  if curl -sf --max-time 5 http://localhost:8000/status-json.xsl >/dev/null; then
+    ok "Icecast is responding on port 8000."
+  else
+    warn "Icecast not responding yet — it will be re-checked at the end."
+  fi
 else
-  warn "Icecast not responding yet — it will be re-checked at the end."
+  warn "This resets the Icecast source/admin passwords and restarts Icecast,"
+  warn "replacing any existing Icecast settings."
+  if [ "${INTERACTIVE}" = "1" ] && ! confirm "Reset Icecast and continue?"; then
+    die "Installation cancelled. The Icecast reset is required so the tuner can stream."
+  fi
+
+  info "Generating a random source password and applying it to Icecast."
+
+  ICECAST_XML="/etc/icecast2/icecast.xml"
+  SOURCE_PASS="$(gen_pass)"
+  ADMIN_PASS="$(gen_pass)"
+
+  if [ ! -f "${ICECAST_XML}" ]; then
+    warn "Icecast config not found at ${ICECAST_XML}. If you installed Icecast elsewhere,"
+    warn "set the source password manually and update ${APP_DIR}/icecast.conf."
+  else
+    if grep -q '<source-password>' "${ICECAST_XML}"; then
+      sed -i "s|<source-password>.*</source-password>|<source-password>${SOURCE_PASS}</source-password>|" "${ICECAST_XML}"
+      sed -i "s|<admin-password>.*</admin-password>|<admin-password>${ADMIN_PASS}</admin-password>|" "${ICECAST_XML}"
+      ok "Icecast source/admin password set."
+    else
+      warn "Could not find <source-password> in icecast.xml; leaving Icecast config unchanged."
+    fi
+  fi
+
+  systemctl enable icecast2 >/dev/null 2>&1 || warn "Could not enable icecast2 (may need manual start)."
+  systemctl restart icecast2 >/dev/null 2>&1 || warn "Could not restart icecast2."
+  sleep 1
+  if curl -sf --max-time 5 http://localhost:8000/status-json.xsl >/dev/null; then
+    ok "Icecast is responding on port 8000."
+  else
+    warn "Icecast not responding yet — it will be re-checked at the end."
+  fi
 fi
 
 # ------------------------------------------------------------- app install
@@ -298,8 +387,15 @@ info "Installing to ${APP_DIR}."
 
 mkdir -p "${APP_DIR}/stations" "${APP_DIR}/recordings"
 install -m 755 "${SRC}/tuner.py" "${APP_DIR}/tuner.py"
+install -m 644 "${SRC}/configure.py" "${APP_DIR}/configure.py"
 [ -f "${SRC}/zabbix_template.xml" ] && install -m 644 "${SRC}/zabbix_template.xml" "${APP_DIR}/zabbix_template.xml"
+install -m 755 "${SRC}/pituner" /usr/local/bin/pituner
+ok "Installed the 'pituner' command (try: sudo pituner config)."
 
+# Keep an existing icecast.conf on upgrade; only (re)write it on a first or fresh install.
+if [ "${KEEP_SETTINGS}" = "1" ] && [ -f "${APP_DIR}/icecast.conf" ]; then
+  info "Keeping your existing ${APP_DIR}/icecast.conf."
+else
 cat > "${APP_DIR}/icecast.conf" <<EOF
 # Icecast connection — shared by all stations
 # ─── user settings ─────────────────────────────────
@@ -311,6 +407,7 @@ SOURCE_PASSWORD=${SOURCE_PASS}
 # ADMIN_PASSWORD=
 # ─── end user settings ─────────────────────────────
 EOF
+fi
 
 # service user
 if ! id -u pituner >/dev/null 2>&1; then
@@ -337,7 +434,9 @@ step "5 of 8: Detect dongle serials"
 SERIALS=()
 DONGLE_COUNT=0
 
-if [ "${INTERACTIVE}" = "1" ]; then
+if [ "${KEEP_SETTINGS}" = "1" ]; then
+  info "Keeping your dongle serials. Check them any time with:  rtl_test"
+elif [ "${INTERACTIVE}" = "1" ]; then
   info "Detecting connected dongles..."
 
   # Diagnostics: show what rtl_test sees.
@@ -394,8 +493,11 @@ fi
 # ------------------------------------------------------------- stations
 step "6 of 8: Configure stations"
 
-# Always deploy the example station files as editable starting templates.
-if compgen -G "${SRC}/stations/*.conf" >/dev/null 2>&1; then
+# Deploy the example station files as editable starting templates, but never
+# over stations that are already configured (they may be named like the examples).
+if [ "${KEEP_SETTINGS}" = "1" ] && compgen -G "${APP_DIR}/stations/*.conf" >/dev/null 2>&1; then
+  ok "Keeping your existing stations in ${APP_DIR}/stations/."
+elif compgen -G "${SRC}/stations/*.conf" >/dev/null 2>&1; then
   cp "${SRC}"/stations/*.conf "${APP_DIR}/stations/"
   ok "Deployed example station files to ${APP_DIR}/stations/"
 else
@@ -423,7 +525,9 @@ write_station() {
   } > "${file}"
 }
 
-if [ "${INTERACTIVE}" = "1" ] \
+if [ "${KEEP_SETTINGS}" = "1" ]; then
+  info "To add or change stations later:  sudo pituner config"
+elif [ "${INTERACTIVE}" = "1" ] \
    && confirm "Configure stations now (name, band, frequency, serial)?"; then
   count=$(ask "How many stations will you configure?" "${DONGLE_COUNT:-1}")
   rm -f "${APP_DIR}"/stations/*.conf
@@ -463,6 +567,22 @@ chown -R pituner:pituner "${APP_DIR}/stations"
 # ------------------------------------------------------------- zabbix
 step "7 of 8: Zabbix and email alerts (optional)"
 ZABBIX_ENABLED="false"
+EMAIL_ENABLED="false"
+smtp_to=""
+
+if [ "${KEEP_SETTINGS}" = "1" ]; then
+  info "Keeping your existing Zabbix and email settings."
+  grep -qi '^ENABLED=true' "${APP_DIR}/zabbix.conf" 2>/dev/null && ZABBIX_ENABLED="true"
+  if grep -qi '^ENABLED=true' "${APP_DIR}/smtp.conf" 2>/dev/null; then
+    EMAIL_ENABLED="true"
+    smtp_to="$(sed -n 's/^TO=//p' "${APP_DIR}/smtp.conf" | head -n1)"
+  fi
+  # Add settings that newer versions understand (never changes a value you set).
+  python3 "${APP_DIR}/tuner.py" upgrade-config --dir "${APP_DIR}" || warn "Could not update the config files."
+  chown -R pituner:pituner "${APP_DIR}"
+  chmod 600 "${APP_DIR}"/*.conf
+else
+ZABBIX_ENABLED="false"
 if [ "${INTERACTIVE}" = "1" ] && confirm "Enable Zabbix trapper alerts now?"; then
   server=$(ask "  Zabbix server address" "zabbix.internal.example.com")
   port=$(ask "  Zabbix trapper port" "10051")
@@ -478,7 +598,9 @@ KEY_EVENT=pituner.event
 KEY_STATUS=pituner.status
 KEY_ACTIVE=pituner.stations_active
 KEY_HEARTBEAT=pituner.heartbeat
+KEY_EAS=pituner.eas
 INTERVAL=60
+EAS_DETECT=true
 # ─── end user settings ─────────────────────────────
 EOF
   chown pituner:pituner "${APP_DIR}/zabbix.conf"
@@ -498,7 +620,9 @@ KEY_EVENT=pituner.event
 KEY_STATUS=pituner.status
 KEY_ACTIVE=pituner.stations_active
 KEY_HEARTBEAT=pituner.heartbeat
+KEY_EAS=pituner.eas
 INTERVAL=60
+EAS_DETECT=true
 # ─── end user settings ─────────────────────────────
 EOF
   chown pituner:pituner "${APP_DIR}/zabbix.conf"
@@ -572,6 +696,7 @@ else
   chown pituner:pituner "${APP_DIR}/smtp.conf"
   info "Email alerts skipped. You can enable them later by editing ${APP_DIR}/smtp.conf."
 fi
+fi
 
 # ------------------------------------------------------------- service
 step "8 of 8: Install and start the service"
@@ -591,6 +716,13 @@ if ! systemctl restart pituner.service 2>&1; then
   die "Service did not start."
 fi
 ok "pituner.service installed and started."
+
+# ------------------------------------------------------------- reconfigure
+if [ "${MODE}" = "reconfigure" ]; then
+  step "Reconfigure"
+  info "Opening the settings menu (you can run it any time with:  sudo pituner config)."
+  python3 "${APP_DIR}/tuner.py" config --dir "${APP_DIR}" || true
+fi
 
 # ------------------------------------------------------------- verify
 step "Verification"
@@ -620,14 +752,22 @@ info "Recent service log:"
 journalctl -u pituner -n 15 --no-pager 2>/dev/null || true
 
 echo ""
-echo -e "${BOLD}${GREEN}Installation complete.${RESET}"
+if [ "${KEEP_SETTINGS}" = "1" ]; then
+  echo -e "${BOLD}${GREEN}Upgrade complete.${RESET} Your settings, stations and Icecast passwords were kept."
+  [ -n "${BACKUP_NOTE}" ] && echo "  ${BACKUP_NOTE}"
+else
+  echo -e "${BOLD}${GREEN}Installation complete.${RESET}"
+fi
 echo ""
 echo "  Stream URLs:     http://<this-pi>:8000/<mount>"
 echo "  Station configs: ${APP_DIR}/stations/*.conf"
 echo "  View logs:       journalctl -u pituner -f"
 echo "  Icecast status:  http://<this-pi>:8000/status-json.xsl"
 echo ""
-echo "  To add (or edit) a station later, put a file like this in"
+echo "  Change settings any time with:  sudo pituner config"
+echo "  (or edit the files by hand and run:  sudo systemctl reload pituner)"
+echo ""
+echo "  To add (or edit) a station by hand, put a file like this in"
 echo "  ${APP_DIR}/stations/ and run:  sudo systemctl reload pituner"
 echo ""
 echo "    # my-station.conf"
@@ -638,8 +778,12 @@ echo "    SERIAL=00001001"
 echo "    GAIN=40.2          # optional; delete for auto-gain"
 echo "    RBDS=true          # optional (fm only); RBDS text -> Icecast now-playing"
 echo ""
-echo "  Icecast admin password: ${ADMIN_PASS}"
-echo "  Icecast source password (also in icecast.conf): ${SOURCE_PASS}"
+if [ "${KEEP_SETTINGS}" = "1" ]; then
+  echo "  Icecast passwords are unchanged (admin password: see /etc/icecast2/icecast.xml)."
+else
+  echo "  Icecast admin password: ${ADMIN_PASS}"
+  echo "  Icecast source password (also in icecast.conf): ${SOURCE_PASS}"
+fi
 if [ "${ZABBIX_ENABLED}" = "true" ]; then
   echo "  Zabbix: import ${APP_DIR}/zabbix_template.xml and attach it to your host."
 fi

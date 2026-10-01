@@ -30,9 +30,11 @@
 </p>
 
 > [!NOTE]
-> **Pi-Tuner is a small, hobby-scale project.** The installer **resets your
+> **Pi-Tuner is a small, hobby-scale project.** A first install **resets your
 > Icecast configuration** (it regenerates the source and admin passwords), so
-> back up Icecast first if you already use it for other streams.
+> back up Icecast first if you already use it for other streams. Re-running the
+> installer later is safe: it offers to
+> [upgrade and keep all your settings](#upgrading-and-changing-settings).
 
 ## What it does
 
@@ -73,6 +75,10 @@ systemd keeps running.
   <tr>
     <td>✉️&nbsp;<b>Email&nbsp;alerts</b></td>
     <td>Optional SMTP emails when a station goes down or recovers, the EAS tone is heard, recording disk space runs low, or the service starts or stops</td>
+  </tr>
+  <tr>
+    <td>⚙️&nbsp;<b>Easy&nbsp;upgrades</b></td>
+    <td>Re-run the installer to upgrade without losing your settings, and change them any time with the <code>sudo pituner config</code> menu</td>
   </tr>
   <tr>
     <td>🧰&nbsp;<b>One-line&nbsp;installer</b></td>
@@ -120,9 +126,13 @@ dongle serials, and helps you set up your first station or two. You don't need
 to set up every station now: you can add more any time.
 
 > [!WARNING]
-> The installer **resets your Icecast configuration**: it regenerates the
-> source and admin passwords and restarts Icecast. Back up first if you already
-> use Icecast for other streams.
+> A first install (or choosing **Fresh**) **resets your Icecast configuration**:
+> it regenerates the source and admin passwords and restarts Icecast. Back up
+> first if you already use Icecast for other streams.
+
+Already installed? Run the same command again. It asks whether to **Upgrade**
+(keeps everything), **Reconfigure** or start **Fresh**; see
+[Upgrading and changing settings](#upgrading-and-changing-settings).
 
 Prefer to look at the code first? Clone and run instead:
 
@@ -183,7 +193,8 @@ RECORD=true        # optional; save 15-minute MP3 recordings
 # ─── end user settings ─────────────────────────────
 ```
 
-- To **add** a station: drop a new `.conf` file in `stations/`.
+- The easy way: `sudo pituner config` and pick **Stations**.
+- By hand, to **add** a station: drop a new `.conf` file in `stations/`.
 - To **change** a station: edit its file.
 - To **remove** a station: delete its file.
 
@@ -198,6 +209,45 @@ Each station's stream is then available at:
 ```
 http://<raspberry-pi-ip>:8000/<mount>
 ```
+
+## Upgrading and changing settings
+
+**Upgrading.** Run the installer again (the one-line command above, or
+`sudo ./install.sh` from a clone). When it finds an existing install it asks:
+
+| Choice | What it does |
+|--------|--------------|
+| **1) Upgrade** (default) | Keeps all your settings, stations, Icecast configuration and passwords. Installs the new version, adds any new settings to your config files, restarts the service. |
+| **2) Reconfigure** | Does the upgrade, then opens the settings menu. |
+| **3) Fresh** | Resets Icecast and your settings and sets everything up again, after asking you to confirm. |
+
+If there's no terminal (for example `curl ... | sudo bash`), it upgrades. You can
+skip the question with `--upgrade`, `--reconfigure` or `--fresh`.
+
+- Before anything changes, your settings are copied to
+  `/opt/pituner/backups/<date-time>/` (the last 5 are kept).
+- New versions sometimes add settings. The upgrade adds them to your files with
+  safe defaults and **never changes a value you set**. You can run it yourself
+  any time: `sudo pituner upgrade-config` (add `--dry-run` to only list what's
+  missing).
+- Your Icecast admin password isn't stored by Pi-Tuner; it stays in
+  `/etc/icecast2/icecast.xml`.
+
+**Changing settings.** Run the menu:
+
+```sh
+sudo pituner config
+```
+
+It covers stations (add, edit, remove, RBDS and recording), the Icecast
+connection, Zabbix and email (with a test-email option). It shows your current
+values (press Enter to keep one), checks what you type, hides passwords, keeps
+the comments in your files, and offers to reload the service when you're done.
+It backs up your settings before its first change. Removing a station keeps the
+other stations' stream URLs the same.
+
+Other `pituner` commands: `pituner check` (validate the config),
+`pituner test-email`, and `pituner backup-config`.
 
 ## Configuration reference
 
@@ -233,7 +283,7 @@ you change your Icecast password later.
 If you run a Zabbix server internally, Pi-Tuner can push station events and a
 status heartbeat to it (no agent needed on the Pi).
 
-1. On your Zabbix server, import `zabbix_template.xml`
+1. On your Zabbix server (6.0 or newer), import `zabbix_template.xml`
    (Configuration → Templates → Import).
 2. Create a host (e.g. `pituner`) and attach the `Pi-Tuner` template.
 3. Edit `zabbix.conf` on the Pi:
@@ -266,7 +316,7 @@ quickest way to get your server settings right.
 | `HOST`, `PORT`   | —, `587`       | Your SMTP server                                     |
 | `SECURITY`       | `starttls`     | `starttls` (usually port 587), `ssl` (usually 465) or `none` |
 | `VERIFY_TLS`     | `true`         | Set `false` for an internal relay with a self-signed certificate |
-| `USERNAME`, `PASSWORD` | blank    | Login, if the server needs one. Avoid ` #` in the password |
+| `USERNAME`, `PASSWORD` | blank    | Login, if the server needs one. Put the password in double quotes if it contains ` #` (the menu does this for you) |
 | `FROM`           | `pituner@<host>` | Sender address                                     |
 | `TO`             | —              | One or more recipients, separated by commas          |
 | `SUBJECT_PREFIX` | `[Pi-Tuner]`   | Start of every subject                               |
@@ -468,16 +518,19 @@ They rotate by size (10 MB, keeping 5 compressed copies) via
 
 ```
 /opt/pituner/
-  tuner.py            # the whole app (Python standard library only)
+  tuner.py            # the app (Python standard library only)
+  configure.py        # the `pituner config` menu
   icecast.conf        # shared Icecast connection
   zabbix.conf         # Zabbix trapper settings (optional)
   smtp.conf           # SMTP email alerts (optional; holds the password)
   stations/           # one *.conf file per station
-  recordings/         # 15-minute MP3 recordings (when RECORD=true)
     fm-example.conf
     wx-example.conf
+  recordings/         # 15-minute MP3 recordings (when RECORD=true)
+  backups/            # copies of your settings, made before upgrades and edits
   zabbix_template.xml # import into Zabbix (optional)
-  pituner.service     # systemd unit
+/etc/systemd/system/pituner.service   # systemd unit
+/usr/local/bin/pituner                # the `pituner` command
 ```
 
 The repository also has `install.sh` / `uninstall.sh`, `logrotate.conf`, a
@@ -487,8 +540,9 @@ decoders in `/usr/local/bin`.
 
 ## Uninstall
 
-Remove the service, application files, the `pituner` user, and the `demux`
-and `redsea` decoders (system packages are left in place):
+Remove the service, application files, the `pituner` user, the `pituner`
+command, and the `demux` and `redsea` decoders (system packages are left in
+place):
 
 ```sh
 sudo ./uninstall.sh          # asks before removing each thing

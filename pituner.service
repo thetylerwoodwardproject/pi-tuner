@@ -6,6 +6,7 @@ Wants=icecast2.service
 [Service]
 Type=simple
 ExecStart=/usr/bin/python3 /opt/pituner/tuner.py --dir /opt/pituner
+ExecReload=/bin/kill -HUP $MAINPID
 User=pituner
 Group=plugdev
 Restart=always

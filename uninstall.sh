@@ -112,6 +112,14 @@ else
   info "${DEMUX_BIN} not present."
 fi
 
+step "Remove the pituner command"
+if [ -f /usr/local/bin/pituner ]; then
+  rm -f /usr/local/bin/pituner
+  ok "Removed /usr/local/bin/pituner."
+else
+  info "/usr/local/bin/pituner not present."
+fi
+
 step "Remove the redsea RBDS decoder"
 if [ -f "${REDSEA_BIN}" ]; then
   if confirm "Delete ${REDSEA_BIN}?"; then
