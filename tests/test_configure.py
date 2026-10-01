@@ -170,14 +170,12 @@ class StationTests(MenuCase):
 
 class SectionTests(MenuCase):
     def test_zabbix_edit(self):
-        # ENABLED?, SERVER, PORT, HOSTNAME, INTERVAL, EAS_DETECT?, LEVEL_MONITOR?,
-        # DEVIATION_MONITOR?, FM full deviation, WX full deviation
-        m, _ = self.menu(["3", "n", "zbx2.internal", "", "", "30", "y", "", "", "62.5", "", "q", "n"])
+        # ENABLED?, SERVER, PORT, HOSTNAME, INTERVAL, EAS_DETECT?, LEVEL_MONITOR?
+        m, _ = self.menu(["3", "n", "zbx2.internal", "", "", "30", "y", "", "q", "n"])
         m.run()
         conf = tuner.parse_keyvalue(os.path.join(self.d, "zabbix.conf"))
-        self.assertEqual((conf["enabled"], conf["server"], conf["interval"], conf["eas_detect"],
-                          conf["fm_full_deviation_khz"]),
-                         ("false", "zbx2.internal", "30", "true", "62.5"))
+        self.assertEqual((conf["enabled"], conf["server"], conf["interval"], conf["eas_detect"]),
+                         ("false", "zbx2.internal", "30", "true"))
         self.assertIn("PORT=10051", read(os.path.join(self.d, "zabbix.conf")))
 
     def test_icecast_password_is_hidden_and_kept_on_enter(self):

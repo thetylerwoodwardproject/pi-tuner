@@ -167,8 +167,8 @@ class SnapshotTests(Base):
         t.send_heartbeat()
         req = self.zbx.wait_for(1)[0]
         sent = {key.split("[")[0].replace("pituner.tuner.", "") for key in req if key.startswith("pituner.tuner.")}
-        # RBDS text, level, deviation and EAS come from the helper processes
-        self.assertEqual(sent | {"rbds.rt", "rbds.ps", "eas", "level", "deviation", "modulation"},
+        # RBDS text, level and EAS come from the helper processes
+        self.assertEqual(sent | {"rbds.rt", "rbds.ps", "eas", "level"},
                          set(tuner.TUNER_METRICS))
 
     def test_status_change_is_sent_immediately(self):
@@ -389,146 +389,6 @@ class PipelineTests(unittest.TestCase):
                 self.assertEqual(tuner._main_level(["--dir", d, "--tuner", "tuner1",
                                                     "WLSU", "8000", "1"]), 0)
         self.assertEqual(zbx.all_items(), {"pituner.tuner.level[tuner1]": "-90.0"})
-
-
-class DeviationMeterTests(unittest.TestCase):
-    FM_RATE, WX_RATE = 192000, 25000
-
-    @staticmethod
-    def pcm(rate, seconds, amp, dc=0, freq=440):
-        n = int(rate * seconds)
-        return array.array("h", [int(amp * math.sin(2 * math.pi * freq * i / rate)) + dc
-                                 for i in range(n)]).tobytes()
-
-    def run_meter(self, pcm, rate, full_khz, interval=1):
-        z = Captured()
-        tuner.run_deviation_meter("/nowhere", "tuner1", "WLSU", rate, full_khz,
-                                  stream=io.BytesIO(pcm), interval=interval, zbx=z)
-        return z
-
-    def values(self, z, i=0):
-        k = tuner.ZabbixSender.tuner_key
-        return z.sent[i][k("deviation", "tuner1")], z.sent[i][k("modulation", "tuner1")]
-
-    def test_conversion_constants(self):
-        self.assertAlmostEqual(tuner.khz_per_count(192000), 0.0058594, places=6)
-        self.assertAlmostEqual(tuner.khz_per_count(25000) * 6554, 5.0, delta=0.01)
-        self.assertAlmostEqual(12800 * tuner.khz_per_count(192000), 75.0, delta=0.01)
-
-    def test_fm_75_khz_is_100_percent(self):
-        z = self.run_meter(self.pcm(self.FM_RATE, 2, 12800), self.FM_RATE, 75.0)
-        self.assertEqual(len(z.sent), 2)
-        khz, pct = self.values(z)
-        self.assertAlmostEqual(khz, 75.0, delta=0.3)
-        self.assertAlmostEqual(pct, 100.0, delta=0.4)
-        self.assertTrue(z.flushed)
-
-    def test_half_amplitude_is_half_modulation(self):
-        z = self.run_meter(self.pcm(self.FM_RATE, 1, 6400), self.FM_RATE, 75.0)
-        khz, pct = self.values(z)
-        self.assertAlmostEqual(khz, 37.5, delta=0.2)
-        self.assertAlmostEqual(pct, 50.0, delta=0.3)
-
-    def test_overmodulation_reads_above_100(self):
-        z = self.run_meter(self.pcm(self.FM_RATE, 1, 14000), self.FM_RATE, 75.0)
-        self.assertGreater(self.values(z)[1], 105)
-
-    def test_carrier_frequency_error_is_removed(self):
-        # a +4 kHz carrier offset shows up as a constant of about 683 counts
-        offset = int(4 / tuner.khz_per_count(self.FM_RATE))
-        plain = self.values(self.run_meter(self.pcm(self.FM_RATE, 2, 9000), self.FM_RATE, 75.0))
-        shifted = self.values(self.run_meter(self.pcm(self.FM_RATE, 2, 9000, dc=offset),
-                                             self.FM_RATE, 75.0))
-        self.assertAlmostEqual(plain[0], shifted[0], delta=0.5)
-
-    def test_wx_uses_its_own_scale_and_reference(self):
-        z = self.run_meter(self.pcm(self.WX_RATE, 2, 6554), self.WX_RATE, 5.0)
-        khz, pct = self.values(z)
-        self.assertAlmostEqual(khz, 5.0, delta=0.05)
-        self.assertAlmostEqual(pct, 100.0, delta=1.0)
-
-    def test_silence_reads_zero(self):
-        z = self.run_meter(b"\x00\x00" * self.FM_RATE, self.FM_RATE, 75.0)
-        self.assertEqual(self.values(z), (0.0, 0.0))
-
-    def test_a_single_noise_click_is_ignored_but_sustained_peaks_are_not(self):
-        rate = self.FM_RATE
-        block = int(rate * tuner.DEVIATION_BLOCK_SECS)
-        base = array.array("h", [int(6400 * math.sin(2 * math.pi * 440 * i / rate))
-                                 for i in range(rate)])
-        spike = array.array("h", base)
-        for i in range(block * 4, block * 5):
-            spike[i] = 16000                       # one 0.1 s burst (a noise click)
-        click = self.values(self.run_meter(spike.tobytes(), rate, 75.0))
-        self.assertLess(click[0], 45.0)            # not the ~89 kHz the click would read
-        self.assertGreater(click[0], 35.0)
-        sustained = array.array("h", base)
-        for i in range(block * 3, block * 8):
-            sustained[i] = 12000                   # five blocks: real program peaks
-        self.assertGreater(self.values(self.run_meter(sustained.tobytes(), rate, 75.0))[0], 65.0)
-
-    def test_window_peak_helper(self):
-        self.assertEqual(tuner.window_peak([]), 0.0)
-        self.assertEqual(tuner.window_peak([5.0]), 5.0)
-        self.assertEqual(tuner.window_peak([10, 9, 8]), 10)
-        self.assertEqual(tuner.window_peak([100, 10, 9]), 10)      # lone spike dropped
-        self.assertEqual(tuner.window_peak([100, 80, 9]), 100)     # sustained: kept
-
-    def test_reaches_zabbix_end_to_end(self):
-        zbx = FakeZabbix()
-        self.addCleanup(zbx.close)
-        z = tuner.ZabbixSender({"enabled": "true", "server": "127.0.0.1", "port": str(zbx.port)})
-        tuner.run_deviation_meter("/nowhere", "tuner1", "WLSU", self.FM_RATE, 75.0,
-                                  stream=io.BytesIO(self.pcm(self.FM_RATE, 1, 12800)),
-                                  interval=1, zbx=z)
-        got = zbx.all_items()
-        self.assertAlmostEqual(float(got["pituner.tuner.deviation[tuner1]"]), 75.0, delta=0.3)
-        self.assertAlmostEqual(float(got["pituner.tuner.modulation[tuner1]"]), 100.0, delta=0.4)
-
-    def test_subcommand_runs(self):
-        with tempfile.TemporaryDirectory() as d, \
-                mock.patch.object(sys, "stdin", mock.Mock(buffer=io.BytesIO(b"\x00\x00" * 1000))):
-            self.assertEqual(tuner._main_deviation(["--dir", d, "--tuner", "tuner1",
-                                                    "--full-khz", "75", "WLSU", "192000"]), 0)
-
-
-class DeviationPipelineTests(unittest.TestCase):
-    CFG = {"name": "WLSU", "band": "fm", "freq": 88.9, "serial": "1", "gain": "",
-           "mount": "/tuner3", "rbds": True, "record": True}
-    ICE = {"host": "localhost", "port": "8000", "password": "pw"}
-
-    def test_fm_tap_sits_on_the_composite_before_demux_and_rbds(self):
-        cmd = tuner.build_command(self.CFG, self.ICE, 0, deviation=True, dev_full_khz=75.0, rbds=True)
-        self.assertIn('deviation --dir "/opt/pituner" --tuner tuner3 --full-khz 75 "WLSU" 192000)', cmd)
-        self.assertLess(cmd.index("rtl_fm"), cmd.index(" deviation --dir "))
-        self.assertLess(cmd.index(" deviation --dir "), cmd.index("redsea"))
-        self.assertLess(cmd.index(" deviation --dir "), cmd.index("demux"))
-
-    def test_wx_tap_follows_rtl_fm_with_its_own_reference(self):
-        wx = dict(self.CFG, band="wx")
-        cmd = tuner.build_command(wx, self.ICE, 0, deviation=True, dev_full_khz=5.0)
-        self.assertIn('--full-khz 5 "WLSU" 25000)', cmd)
-        self.assertLess(cmd.index(" deviation --dir "), cmd.index(" record --dir "))
-
-    def test_fractional_reference_and_off_by_default(self):
-        cmd = tuner.build_command(self.CFG, self.ICE, 0, deviation=True, dev_full_khz=62.5)
-        self.assertIn("--full-khz 62.5 ", cmd)
-        self.assertNotIn(" deviation --dir ", tuner.build_command(self.CFG, self.ICE, 0))
-
-    def test_config_flags_and_references(self):
-        z = tuner.ZabbixSender({})
-        self.assertEqual((z.deviation_monitor, z.fm_full_khz, z.wx_full_khz), (True, 75.0, 5.0))
-        z = tuner.ZabbixSender({"deviation_monitor": "false", "fm_full_deviation_khz": "70",
-                                "wx_full_deviation_khz": "4.5"})
-        self.assertEqual((z.deviation_monitor, z.fm_full_khz, z.wx_full_khz), (False, 70.0, 4.5))
-        with tempfile.TemporaryDirectory() as d:
-            for text, expected in (("ENABLED=true\nSERVER=h\n", True),
-                                   ("ENABLED=true\nSERVER=h\nDEVIATION_MONITOR=false\n", False),
-                                   ("ENABLED=false\nSERVER=h\n", False)):
-                write(os.path.join(d, "zabbix.conf"), text)
-                t = tuner.Tuner(d)
-                t.load_config()
-                self.assertEqual(t.deviation_enabled, expected, text)
 
 
 if __name__ == "__main__":
