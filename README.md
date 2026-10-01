@@ -1,7 +1,7 @@
 <p align="center">
   <picture>
     <source media="(prefers-color-scheme: dark)" srcset="docs/images/logo-dark.svg">
-    <img src="docs/images/logo-light.svg" alt="Pi Tuner" width="440">
+    <img src="docs/images/logo-light.svg" alt="Pi-Tuner" width="440">
   </picture>
 </p>
 
