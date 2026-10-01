@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Pi Tuner v2 -- a minimal multi-station SDR streamer.
+"""Pi-Tuner -- a minimal multi-station SDR streamer.
 
 Reads one KEY=value config file per station from the ``stations/`` directory,
 resolves each dongle serial to a device index, and streams each station to a
@@ -766,7 +766,7 @@ def main(argv=None):
     signal.signal(signal.SIGTERM, _stop)
     signal.signal(signal.SIGINT, _stop)
 
-    log(f"Pi Tuner v2 starting (config: {args.dir})")
+    log(f"Pi-Tuner starting (config: {args.dir})")
     tuner.run()
     log("stopped")
     return 0

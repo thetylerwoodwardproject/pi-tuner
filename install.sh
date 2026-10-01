@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pi Tuner v2 — interactive installer
+# Pi-Tuner — interactive installer
 #
 # Walks through every step: installs dependencies (including building the FM
 # stereo `demux` decoder), configures Icecast, programs dongle serials, writes
@@ -126,7 +126,7 @@ fi
 # When run via `curl ... | sudo bash` the script is read from stdin and
 # tuner.py is not beside it, so download the project into a temp dir.
 if [ ! -f "${SRC}/tuner.py" ]; then
-  info "Fetching Pi Tuner v2 files..."
+  info "Fetching Pi-Tuner files..."
   SRC_TMP="$(mktemp -d)"
   trap 'rm -rf "${SRC_TMP}"' EXIT
   if ! curl -fsSL "${REPO}/archive/refs/heads/main.tar.gz" | tar xz -C "${SRC_TMP}"; then
@@ -140,7 +140,7 @@ if [ ! -f "${SRC}/tuner.py" ]; then
 fi
 
 clear 2>/dev/null || true
-echo -e "${BOLD}${GREEN}Pi Tuner v2 installer${RESET}"
+echo -e "${BOLD}${GREEN}Pi-Tuner installer${RESET}"
 echo "A minimal multi-station SDR streamer for Raspberry Pi."
 echo "This will install dependencies, set up Icecast, configure your stations,"
 echo "and verify everything is running."
@@ -293,7 +293,7 @@ else
 fi
 
 # ------------------------------------------------------------- app install
-step "4 of 8: Install Pi Tuner files"
+step "4 of 8: Install Pi-Tuner files"
 info "Installing to ${APP_DIR}."
 
 mkdir -p "${APP_DIR}/stations"
@@ -405,7 +405,7 @@ fi
 write_station() {
   local name="$1" band="$2" freq="$3" serial="$4" gain="$5" rbds="$6" file="$7"
   {
-    echo "# Pi Tuner v2 station"
+    echo "# Pi-Tuner station"
     echo "#"
     echo "# ─── user settings ─────────────────────────────────"
     echo "NAME=${name}"
@@ -473,7 +473,7 @@ EOF
   chmod 600 "${APP_DIR}/zabbix.conf"
   ZABBIX_ENABLED="true"
   ok "Zabbix configured. Import ${APP_DIR}/zabbix_template.xml on your Zabbix server,"
-  ok "then create a host named '${hostname}' and attach the 'Pi Tuner v2' template."
+  ok "then create a host named '${hostname}' and attach the 'Pi-Tuner' template."
 else
   cat > "${APP_DIR}/zabbix.conf" <<'EOF'
 # Zabbix trapper settings (disabled)
