@@ -296,7 +296,7 @@ fi
 step "4 of 8: Install Pi-Tuner files"
 info "Installing to ${APP_DIR}."
 
-mkdir -p "${APP_DIR}/stations"
+mkdir -p "${APP_DIR}/stations" "${APP_DIR}/recordings"
 install -m 755 "${SRC}/tuner.py" "${APP_DIR}/tuner.py"
 [ -f "${SRC}/zabbix_template.xml" ] && install -m 644 "${SRC}/zabbix_template.xml" "${APP_DIR}/zabbix_template.xml"
 
@@ -403,7 +403,8 @@ else
 fi
 
 write_station() {
-  local name="$1" band="$2" freq="$3" serial="$4" gain="$5" rbds="$6" file="$7"
+  local name="$1" band="$2" freq="$3" serial="$4" gain="$5" rbds="$6"
+  local record="$7" keep="$8" file="$9"
   {
     echo "# Pi-Tuner station"
     echo "#"
@@ -414,6 +415,10 @@ write_station() {
     echo "SERIAL=${serial}"
     [ -n "${gain}" ] && echo "GAIN=${gain}"
     [ "${band}" = "fm" ] && echo "RBDS=${rbds}"
+    if [ "${record}" = "true" ]; then
+      echo "RECORD=true"
+      [ -n "${keep}" ] && echo "RECORD_KEEP_DAYS=${keep}"
+    fi
     echo "# ─── end user settings ─────────────────────────────"
   } > "${file}"
 }
@@ -437,8 +442,15 @@ if [ "${INTERACTIVE}" = "1" ] \
     if [ "${band}" = "fm" ] && confirm "  Send RBDS text to Icecast now-playing?"; then
       rbds=true
     fi
+    record=false
+    keep=""
+    if confirm "  Record this station to ${APP_DIR}/recordings (15-minute MP3 files, ~1.4 GB/day)?"; then
+      record=true
+      keep=$(ask "  Days of recordings to keep (press Enter to keep everything)" "")
+      case "${keep}" in ''|*[!0-9]*) keep="" ;; esac
+    fi
     write_station "${name}" "${band}" "${freq}" "${serial}" "${gain}" "${rbds}" \
-      "${APP_DIR}/stations/$(printf 'station%d.conf' "${i}")"
+      "${record}" "${keep}" "${APP_DIR}/stations/$(printf 'station%d.conf' "${i}")"
     ok "Wrote station ${i} (${name}, ${band} ${freq} MHz)."
   done
 else
