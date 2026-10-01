@@ -59,6 +59,10 @@ REC_RETRY_SECS = 30
 REC_PRUNE_SECS = 3600
 RBDS_LOG_FILE = "RBDS.log"
 RBDS_LOG_GAP_SECS = 3600
+RBDS_RTPLUS_FRESH_SECS = 900
+RBDS_PS_SETTLE_SECS = 12
+RBDS_PS_WINDOW_SECS = 60
+RBDS_PS_DYNAMIC_CHANGES = 3
 PTY_SCAN_SECS = 8.0
 
 # ------------------------------------------------------------------- logging
@@ -646,9 +650,13 @@ def _clean_rds_text(text):
     return re.sub(r"\s+", " ", _CTRL_RE.sub(" ", str(text or ""))).strip()
 
 
-def rbds_song(state):
-    """Now-playing text: 'RadioText (PS)', or whichever of the two we have."""
-    rt, ps = state.get("radiotext", ""), state.get("ps", "")
+def rbds_song(state, label=None):
+    """Now-playing text: 'RadioText (label)', or whichever of the two we have.
+
+    ``label`` is the station label to show (see PsTracker); it defaults to the
+    raw PS name."""
+    rt = state.get("radiotext", "")
+    ps = state.get("ps", "") if label is None else label
     if rt and ps:
         return f"{rt} ({ps})"
     return rt or ps
@@ -684,22 +692,74 @@ _RBDS_LOG_LINE_RE = re.compile(r"^(\d{6} \d{2}:\d{2}:\d{2}): (.*)$")
 _PS_SUFFIX_RE = re.compile(r" \([^()]{1,8}\)$")
 
 
+class PsTracker:
+    """Tracks a station's PS name and decides what to show beside the text.
+
+    Some stations scroll their PS ("Station", "Z93 The", "#1 Hit", "Music"),
+    which isn't a name. When the PS changes several times within a minute we
+    treat it as dynamic and use the callsign redsea derives from the PI code
+    instead (or nothing). The decision waits RBDS_PS_SETTLE_SECS after the
+    first data so a scrolling PS isn't mistaken for a static one.
+    """
+
+    def __init__(self):
+        self.ps = ""
+        self.callsign = ""
+        self.started = None
+        self.changes = []
+
+    def update(self, data, now):
+        if self.started is None:
+            self.started = now
+        if "ps" in data:
+            ps = _clean_rds_text(data["ps"])
+            if ps and ps != self.ps:
+                if self.ps:
+                    self.changes.append(now)
+                self.ps = ps
+        call = data.get("callsign")
+        if isinstance(call, str) and re.fullmatch(r"[A-Z0-9]{3,5}", call.strip()):
+            self.callsign = call.strip()
+
+    def dynamic(self, now):
+        recent = [t for t in self.changes if now - t <= RBDS_PS_WINDOW_SECS]
+        return len(recent) >= RBDS_PS_DYNAMIC_CHANGES
+
+    def label(self, now, final=False):
+        """(decided, text). Undecided until the PS has had time to settle."""
+        if self.started is None:
+            return (final, "")
+        if self.dynamic(now):
+            return (True, self.callsign)
+        if final or now - self.started >= RBDS_PS_SETTLE_SECS:
+            return (True, self.ps)
+        return (False, "")
+
+
+def _log_line_time(line):
+    return time.mktime(time.strptime(line[:15], "%y%m%d %H:%M:%S"))
+
+
 class RbdsLogger:
     """Decide which RBDS now-playing texts belong in the daily RBDS.log.
 
-    Stations that send RadioText Plus are logged from its tagged artist and
-    title, so slogans and ads never appear. For plain RadioText, a text is
-    logged when first seen and then not again until it has been absent for
-    RBDS_LOG_GAP_SECS, so a station that rotates song, slogan, song, slogan
-    logs each text once instead of on every flip.
+    Stations that send RadioText Plus with a song title are logged from its
+    tagged artist and title, so slogans and ads never appear while that is
+    fresh. Otherwise plain RadioText is used: a text is logged when first seen
+    and not again until it has been absent for RBDS_LOG_GAP_SECS, so a station
+    rotating song, slogan, song, slogan logs each text once. A text is held
+    back until the PS label settles, then written with the time it arrived.
     """
 
-    def __init__(self, gap_secs=RBDS_LOG_GAP_SECS):
+    def __init__(self, gap_secs=RBDS_LOG_GAP_SECS, ps_tracker=None):
         self.gap = gap_secs
-        self.ps = ""
-        self.rtplus = False   # station sends RT+: ignore plain RadioText
-        self.last_seen = {}   # text (without the PS suffix) -> last time seen
+        self.tracker = ps_tracker if ps_tracker is not None else PsTracker()
+        self._owns_tracker = ps_tracker is None
+        self.rtplus_title_at = None   # last time RT+ gave us a usable title
+        self.rtplus_state = None      # for the one-line diagnostics
+        self.last_seen = {}           # text (without the label) -> last time seen
         self.current = None
+        self.pending = []             # [(when, text)] waiting for the label
 
     def seed(self, lines, now):
         """Prime history from existing log lines so a restart doesn't re-log."""
@@ -727,28 +787,59 @@ class RbdsLogger:
         artist = tags.get("item.artist") or tags.get("item.band") or ""
         return f"{artist} - {title}" if artist else title
 
-    def feed(self, data, now):
-        """Take one redsea JSON dict; return a log line, or None."""
-        if "ps" in data:
-            self.ps = _clean_rds_text(data["ps"])
-        text = ""
-        if isinstance(data.get("radiotext_plus"), dict):
-            self.rtplus = True
-            text = self._rtplus_text(data["radiotext_plus"])
-        elif "radiotext" in data and not self.rtplus:
-            text = _clean_rds_text(data["radiotext"])
-        if not text:
-            return None
+    def _note_rtplus(self, state):
+        if state != self.rtplus_state:
+            self.rtplus_state = state
+            log_file("rbds.log", {
+                "titles": "RT+ with song titles seen: logging from RT+",
+                "plain": "RT+ has no song titles (or they stopped): logging plain RadioText",
+            }[state])
+
+    def _consider(self, text, now):
         previous = self.last_seen.get(text)
         self.last_seen[text] = now
         if text == self.current:
-            return None
+            return
         self.current = text
         if previous is not None and now - previous < self.gap:
-            return None  # a rotation coming back
-        shown = f"{text} ({self.ps})" if self.ps else text
-        stamp = time.strftime("%y%m%d %H:%M:%S", time.localtime(now))
-        return f"{stamp}: {shown}"
+            return  # a rotation coming back
+        self.pending.append((now, text))
+
+    def _flush(self, now, final=False):
+        decided, label = self.tracker.label(now, final)
+        if not decided:
+            return []
+        lines = []
+        for when, text in self.pending:
+            shown = f"{text} ({label})" if label else text
+            lines.append(f"{time.strftime('%y%m%d %H:%M:%S', time.localtime(when))}: {shown}")
+        self.pending = []
+        return lines
+
+    def feed(self, data, now):
+        """Take one redsea JSON dict; return the log lines now ready (maybe none)."""
+        if self._owns_tracker:
+            self.tracker.update(data, now)
+        if isinstance(data.get("radiotext_plus"), dict):
+            title = self._rtplus_text(data["radiotext_plus"])
+            if title:
+                self.rtplus_title_at = now
+                self._note_rtplus("titles")
+                self._consider(title, now)
+        if "radiotext" in data:
+            fresh = (self.rtplus_title_at is not None
+                     and now - self.rtplus_title_at < RBDS_RTPLUS_FRESH_SECS)
+            if not fresh:
+                if self.rtplus_title_at is not None:
+                    self._note_rtplus("plain")
+                text = _clean_rds_text(data["radiotext"])
+                if text:
+                    self._consider(text, now)
+        return self._flush(now)
+
+    def finish(self, now):
+        """End of stream: write anything still held back."""
+        return self._flush(now, final=True)
 
 
 def _read_rbds_log_tail(base_dir, name, now):
@@ -760,8 +851,9 @@ def _read_rbds_log_tail(base_dir, name, now):
         return []
 
 
-def _append_rbds_log(base_dir, name, now, line):
-    path = rbds_log_path(base_dir, name, now)
+def _append_rbds_log(base_dir, name, line):
+    """Append a log line to the day folder its own timestamp belongs to."""
+    path = rbds_log_path(base_dir, name, _log_line_time(line))
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "a", encoding="utf-8") as f:
@@ -790,11 +882,13 @@ def run_rbds_meta(base_dir, mount, stream=None, updater=update_icecast_metadata,
     }
     state = {}
     last_sent = None
+    tracker = PsTracker()
     logger = None
     if log_name:
-        logger = RbdsLogger()
+        logger = RbdsLogger(ps_tracker=tracker)
         started = clock()
         logger.seed(_read_rbds_log_tail(base_dir, log_name, started), started)
+    now = clock()
     for line in stream:
         try:
             data = json.loads(line)
@@ -802,20 +896,25 @@ def run_rbds_meta(base_dir, mount, stream=None, updater=update_icecast_metadata,
             continue
         if not isinstance(data, dict):
             continue
+        now = clock()
+        tracker.update(data, now)
         if logger is not None:
-            now = clock()
-            entry = logger.feed(data, now)
-            if entry:
-                _append_rbds_log(base_dir, log_name, now, entry)
-        for key in ("ps", "radiotext"):
-            if key in data:
-                state[key] = _clean_rds_text(data[key])
-        song = rbds_song(state)
+            for entry in logger.feed(data, now):
+                _append_rbds_log(base_dir, log_name, entry)
+        if "radiotext" in data:
+            state["radiotext"] = _clean_rds_text(data["radiotext"])
+        decided, label = tracker.label(now)
+        if not decided:
+            continue
+        song = rbds_song(state, label)
         if not song or song == last_sent:
             continue
         if updater(ice, mount, song):
             last_sent = song
             log_file("rbds.log", f"{mount}: now playing: {song}")
+    if logger is not None:
+        for entry in logger.finish(now):
+            _append_rbds_log(base_dir, log_name, entry)
 
 
 def pty_from_json_line(line):
