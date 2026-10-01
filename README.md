@@ -153,8 +153,7 @@ sudo ./install.sh
 > enforces.
 
 - Don't run it from your everyday account, as root, or from the default `pi`
-  user. (For reference, the installed service already runs as its own
-  unprivileged `pituner` user.)
+  user. Use a dedicated, unprivileged account, named whatever you like.
 - Change any default password before the Pi goes on a network.
 - Ideally give Pi-Tuner a Pi of its own, and keep it off networks you don't
   trust. Keep Icecast's admin page, SSH and Zabbix reachable only from your
@@ -185,9 +184,9 @@ Where the passwords are in Pi-Tuner, so you know what to harden:
 | Email (`smtp.conf`) | Use a long, unique password, or an app password from your mail provider. |
 | Zabbix | Pi-Tuner holds no Zabbix password, but protect your Zabbix server the same way. |
 
-`icecast.conf` and `smtp.conf` are plain-text files that only the `pituner`
-user and root can read (mode 600), and `sudo pituner config` hides passwords as
-you type them.
+`icecast.conf` and `smtp.conf` are plain-text files that only the account
+running Pi-Tuner and root can read (mode 600), and `sudo pituner config` hides
+passwords as you type them.
 
 Not running this on air? Then these are suggestions, not requirements: do what
 you do.
