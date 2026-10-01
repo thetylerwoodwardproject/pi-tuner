@@ -357,20 +357,23 @@ For example:
   /opt/pituner/recordings/STATION_NAME/YYYY/MM/DD/RBDS.log
   ```
 
+  Every change is logged, in the Pi's local time, with a new file each day.
+  Plain RadioText is logged as `text (PS)`, and a station that sends RadioText
+  Plus (tagged artist and title) gets the `Artist:, Title:, PS:` form:
+
   ```
-  261001 09:21:15: Metallica - Enter Sandman (WXTB)
-  261001 09:23:16: Avenged Sevenfold - Bat Country (WXTB)
+  261001 09:41:07: WPR Music (WLSU)
+  261001 09:44:52: Artist: Metallica, Title: Enter Sandman, PS: KQYZ-FM
   ```
 
-  Each line is `YYMMDD HH:MM:SS: text (PS)`, in the Pi's local time, appended
-  as the text changes. A new file starts every day. WX stations don't have one.
-  Many stations rotate their RadioText between the song and slogans or phone
-  numbers, so each text is logged once and not again until it has been gone for
-  an hour. If a station sends RadioText Plus with song titles (tagged artist and
-  title), the log uses that instead while it's coming in, which leaves slogans
-  and ads out. If the song tags stop for 15 minutes, or the station sends RT+
-  with no titles at all, plain RadioText is used. A slogan can still be logged
-  once the first time it appears after a start or restart.
+  - A repeat of the text that's already showing is not logged again, but a text
+    coming back after something else (a station rotating song and slogan) is.
+  - An RT line that just repeats the current RT+ artist and title isn't logged
+    twice. If a station's RT+ is blank or has no song tags, plain RadioText is
+    logged as usual, so nothing is lost.
+  - `PS` is the station's PS name. If a station scrolls its PS, the callsign
+    worked out from its PI code is shown instead, or nothing.
+  - WX stations don't have an `RBDS.log`.
 - **Plan for disk space.** Each station uses about 1.4 GB a day (58 MB an hour).
   Set `RECORD_KEEP_DAYS=14` in the station file to delete files (and `RBDS.log`s)
   older than 14 days, plus any empty date folders. Pi-Tuner checks hourly. Leave it out to
