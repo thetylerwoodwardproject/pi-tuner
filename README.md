@@ -32,17 +32,15 @@
 
 > [!NOTE]
 > **Pi-Tuner is a small, hobby-scale project.** A first install **resets your
-> Icecast configuration** (it regenerates the source and admin passwords), so
-> back up Icecast first if you already use it for other streams. Re-running the
-> installer later is safe: it offers to
-> [upgrade and keep all your settings](#upgrading-and-changing-settings).
+> Icecast configuration** (new source and admin passwords), so back up Icecast
+> first if you use it for other streams. Re-running the installer later is safe;
+> it can [upgrade and keep your settings](#upgrading-and-changing-settings).
 
 ## What it does
 
 Plug in a dongle, tune it to a frequency, and it streams that station to your
-Icecast server where anyone on your network can listen. No web interface, no
-database: just a folder of text config files and one Python program that
-systemd keeps running.
+Icecast server. No web interface, no database: just a folder of text config
+files and one Python program that systemd keeps running.
 
 <table>
   <tr>
@@ -55,15 +53,15 @@ systemd keeps running.
   </tr>
   <tr>
     <td>🏷️&nbsp;<b>RBDS&nbsp;now-playing</b></td>
-    <td>Decodes RadioText and the station name and shows <code>Artist - Title (PS)</code> in Icecast. The station's program type (PTY) becomes the genre (<code>Radio</code> if none), and WX streams get <code>Weather</code></td>
+    <td>Shows <code>Artist - Title (PS)</code> in Icecast. The program type (PTY) becomes the genre (<code>Radio</code> if none; <code>Weather</code> for WX)</td>
   </tr>
   <tr>
     <td>⏺️&nbsp;<b>Recording</b></td>
-    <td>Optionally saves any station to disk as 128&nbsp;kbps MP3 files, cut every 15 minutes into dated folders</td>
+    <td>Optionally saves any station as 128&nbsp;kbps MP3 files, cut every 15 minutes into dated folders</td>
   </tr>
   <tr>
     <td>♻️&nbsp;<b>Self-healing</b></td>
-    <td>If a dongle is unplugged or a stream dies, that station restarts automatically, with backoff</td>
+    <td>A station whose dongle or stream dies restarts automatically, with backoff</td>
   </tr>
   <tr>
     <td>🚨&nbsp;<b>EAS&nbsp;tone&nbsp;detection</b></td>
@@ -71,19 +69,19 @@ systemd keeps running.
   </tr>
   <tr>
     <td>📟&nbsp;<b>Zabbix&nbsp;alerts</b></td>
-    <td>Optional per-tuner items and alerts (state, frequency, RBDS text, audio level, EAS, recording), with no agent on the Pi</td>
+    <td>Optional per-tuner items and alerts, with no agent on the Pi</td>
   </tr>
   <tr>
     <td>✉️&nbsp;<b>Email&nbsp;alerts</b></td>
-    <td>Optional SMTP emails when a station goes down or recovers, the EAS tone is heard, recording disk space runs low, or the service starts or stops</td>
+    <td>Optional SMTP emails for station down/recovered, EAS tone, low disk space, and service start/stop</td>
   </tr>
   <tr>
     <td>⚙️&nbsp;<b>Easy&nbsp;upgrades</b></td>
-    <td>Re-run the installer to upgrade without losing your settings, and change them any time with the <code>sudo pituner config</code> menu</td>
+    <td>Re-run the installer to upgrade and keep your settings; change them with <code>sudo pituner config</code></td>
   </tr>
   <tr>
     <td>🧰&nbsp;<b>One-line&nbsp;installer</b></td>
-    <td>Installs packages, builds the decoders, configures Icecast and walks you through your first stations</td>
+    <td>Installs everything, configures Icecast and walks you through your first stations</td>
   </tr>
 </table>
 
@@ -110,8 +108,7 @@ supervisor in `tuner.py` watches every pipeline and restarts any that die.
 - One RTL-SDR USB dongle per station you want to stream.
 - An antenna for each dongle (a cheap telescopic antenna works for FM).
 
-Everything else (the software, the Icecast server, the FM and RBDS decoders) is
-installed for you by the installer.
+The installer handles everything else (software, Icecast, the FM and RBDS decoders).
 
 ## Install (one line)
 
@@ -121,19 +118,15 @@ Run this on the Pi:
 curl -fsSL https://raw.githubusercontent.com/thetylerwoodwardproject/pi-tuner/main/install.sh -o /tmp/pituner-install.sh && sudo bash /tmp/pituner-install.sh
 ```
 
-The installer walks you through each step and asks before doing anything:
-it installs packages, configures Icecast, guides you through programming your
-dongle serials, and helps you set up your first station or two. You don't need
-to set up every station now: you can add more any time.
+The installer asks before each step: packages, Icecast, dongle serials and your
+first station or two. You can add more stations any time.
 
 > [!WARNING]
-> A first install (or choosing **Fresh**) **resets your Icecast configuration**:
-> it regenerates the source and admin passwords and restarts Icecast. Back up
-> first if you already use Icecast for other streams.
+> A first install (or **Fresh**) **resets your Icecast configuration** and
+> restarts Icecast. Back up first if you use Icecast for other streams.
 
-Already installed? Run the same command again. It asks whether to **Upgrade**
-(keeps everything), **Reconfigure** or start **Fresh**; see
-[Upgrading and changing settings](#upgrading-and-changing-settings).
+Already installed? Run the same command again to **Upgrade**, **Reconfigure** or
+start **Fresh**; see [Upgrading and changing settings](#upgrading-and-changing-settings).
 
 Prefer to look at the code first? Clone and run instead:
 
@@ -146,24 +139,21 @@ sudo ./install.sh
 ## Security
 
 > [!IMPORTANT]
-> **We strongly recommend running Pi-Tuner under its own, separate user account
-> on your Pi** rather than your everyday login. It takes audio from a radio,
-> talks to your network, and holds passwords, so it shouldn't share an account
-> with anything else. These are recommendations, not something the installer
-> enforces.
+> **We strongly recommend running Pi-Tuner under its own, separate user account**
+> rather than your everyday login. It handles radio audio, talks to your network
+> and holds passwords. These are recommendations; the installer doesn't enforce them.
 
-- Don't run it from your everyday account, as root, or from the default `pi`
-  user. Use a dedicated, unprivileged account, named whatever you like.
+- Don't run it as root, from the default `pi` user, or from your everyday
+  account. Use a dedicated, unprivileged account named whatever you like.
 - Change any default password before the Pi goes on a network.
-- Ideally give Pi-Tuner a Pi of its own, and keep it off networks you don't
-  trust. Keep Icecast's admin page, SSH and Zabbix reachable only from your
-  internal network, or put a firewall or network segmentation in front of them.
-- Keep the Pi's software updated (`sudo apt update && sudo apt full-upgrade`).
+- Ideally give Pi-Tuner a Pi of its own, off networks you don't trust. Keep
+  Icecast's admin page, SSH and Zabbix reachable only internally, or behind a
+  firewall or network segmentation.
+- Keep the Pi updated (`sudo apt update && sudo apt full-upgrade`).
 
 **Using Pi-Tuner in a broadcast environment? Follow the FCC password
-guidelines.** The FCC's cybersecurity rules for broadcast equipment cover
-internet-connected devices in the signal chain. In short, as the broadcasters'
-associations summarize them ([SBE summary](https://sbe36.org/2025/12/fcc-urges-broadcasters-to-follow-cybersecurity-best-practices/)):
+guidelines.** The FCC's cybersecurity rules cover internet-connected devices in
+the signal chain. In short ([SBE summary](https://sbe36.org/2025/12/fcc-urges-broadcasters-to-follow-cybersecurity-best-practices/)):
 
 - passwords of **at least 15 characters**, with no dictionary words;
 - **never reuse** a password on another account, device or service;
@@ -172,59 +162,44 @@ associations summarize them ([SBE summary](https://sbe36.org/2025/12/fcc-urges-b
 - install security patches and upgrades promptly, and limit remote access with a
   firewall or network segmentation.
 
-Check the current FCC rules for the exact requirements; this README isn't legal
-advice.
+Check the current FCC rules for exact requirements; this isn't legal advice.
 
-Where the passwords are in Pi-Tuner, so you know what to harden:
+Where the passwords are:
 
 | Password | Notes |
 |----------|-------|
 | The Pi's own login, and SSH | Yours to set. Prefer SSH keys, and turn off password logins if you can. |
-| Icecast source and admin | The installer generates 32 random characters for each, which already meets the length rule. Keep them, and don't reuse them elsewhere. |
+| Icecast source and admin | The installer generates 32 random characters for each, which meets the length rule. Don't reuse them. |
 | Email (`smtp.conf`) | Use a long, unique password, or an app password from your mail provider. |
-| Zabbix | Pi-Tuner holds no Zabbix password, but protect your Zabbix server the same way. |
+| Zabbix | Pi-Tuner holds no Zabbix password; protect your server the same way. |
 
-`icecast.conf` and `smtp.conf` are plain-text files that only the account
-running Pi-Tuner and root can read (mode 600), and `sudo pituner config` hides
-passwords as you type them.
-
-Not running this on air? Then these are suggestions, not requirements: do what
-you do.
+`icecast.conf` and `smtp.conf` are plain text, readable only by the Pi-Tuner
+account and root (mode 600), and `sudo pituner config` hides passwords as you
+type. Not on air? Treat all of this as suggestions.
 
 ## Give each dongle a unique serial number
 
-This step matters because **every RTL-SDR dongle ships with the same default
-serial number** (usually `00000001`). With two or more plugged in, the Pi can't
-tell them apart. Giving each dongle its own serial is what makes them work
-reliably: and it only takes a minute per dongle.
-
-Do this **one dongle at a time**:
+**Every RTL-SDR dongle ships with the same default serial** (usually
+`00000001`), so with two or more plugged in the Pi can't tell them apart. Give
+each its own, **one dongle at a time**:
 
 1. Unplug all dongles, then plug in just **one**.
 2. Write a new serial to it:
    ```sh
    sudo rtl_eeprom -d 0 -s 00001001
    ```
-3. Unplug it, then plug it back in (the new serial only takes effect after a
-   replug).
+3. Unplug and replug it (the new serial only applies after a replug).
 4. Confirm it worked:
    ```sh
    rtl_test
    ```
    Look for a line like `SN: 00001001`.
-5. Repeat for each dongle with a different number: `00001002`, `00001003`, and
-   so on.
-6. Plug them all back in and check `rtl_test` again: you should see one line
-   per dongle, each with its own serial.
+5. Repeat for each dongle with a different number (`00001002`, `00001003`, …).
+6. Plug them all in and run `rtl_test` again: one line per dongle, each with its
+   own serial.
 
-Notes:
-
-- `rtl_eeprom` is installed as part of the `rtl-sdr` package (the installer
-  installs it for you).
-- Any 8-digit number works. Pick a scheme you can remember, e.g. `00001001`,
-  `00001002`, …
-- Pi-Tuner matches serials by number, so `1001`, `0001001`, and `00001001` are
-  all treated as the same dongle.
+Any 8-digit number works, and serials are matched by number, so `1001` and
+`00001001` are the same dongle. `rtl_eeprom` comes with the `rtl-sdr` package.
 
 ## Add and edit stations
 
@@ -242,12 +217,10 @@ RECORD=true        # optional; save 15-minute MP3 recordings
 # ─── end user settings ─────────────────────────────
 ```
 
-- The easy way: `sudo pituner config` and pick **Stations**.
-- By hand, to **add** a station: drop a new `.conf` file in `stations/`.
-- To **change** a station: edit its file.
-- To **remove** a station: delete its file.
+- Easiest: `sudo pituner config` and pick **Stations**.
+- By hand: **add** a `.conf` file in `stations/`, **edit** its file, or **delete** it.
 
-After changing the files, tell the service to reload: no full restart needed:
+Then reload (no full restart needed):
 
 ```sh
 sudo systemctl reload pituner.service
@@ -261,26 +234,24 @@ http://<raspberry-pi-ip>:8000/<mount>
 
 ## Upgrading and changing settings
 
-**Upgrading.** Run the installer again (the one-line command above, or
-`sudo ./install.sh` from a clone). When it finds an existing install it asks:
+**Upgrading.** Run the installer again (the one-line command, or
+`sudo ./install.sh` from a clone). On an existing install it asks:
 
 | Choice | What it does |
 |--------|--------------|
-| **1) Upgrade** (default) | Keeps all your settings, stations, Icecast configuration and passwords. Installs the new version, adds any new settings to your config files, restarts the service. |
+| **1) Upgrade** (default) | Keeps your settings, stations, Icecast configuration and passwords. Installs the new version, adds any new settings and restarts the service. |
 | **2) Reconfigure** | Does the upgrade, then opens the settings menu. |
 | **3) Fresh** | Resets Icecast and your settings and sets everything up again, after asking you to confirm. |
 
-If there's no terminal (for example `curl ... | sudo bash`), it upgrades. You can
-skip the question with `--upgrade`, `--reconfigure` or `--fresh`.
+With no terminal (e.g. `curl ... | sudo bash`) it upgrades. Skip the question
+with `--upgrade`, `--reconfigure` or `--fresh`.
 
-- Before anything changes, your settings are copied to
-  `/opt/pituner/backups/<date-time>/` (the last 5 are kept).
-- New versions sometimes add settings. The upgrade adds them to your files with
-  safe defaults and **never changes a value you set**. You can run it yourself
-  any time: `sudo pituner upgrade-config` (add `--dry-run` to only list what's
-  missing).
-- Your Icecast admin password isn't stored by Pi-Tuner; it stays in
-  `/etc/icecast2/icecast.xml`.
+- Your settings are first copied to `/opt/pituner/backups/<date-time>/` (last 5 kept).
+- New settings are added with safe defaults and **your values are never
+  changed**. Run it yourself with `sudo pituner upgrade-config` (`--dry-run` to
+  only list what's missing).
+- The Icecast admin password stays in `/etc/icecast2/icecast.xml`; Pi-Tuner
+  doesn't store it.
 
 **Changing settings.** Run the menu:
 
@@ -288,15 +259,14 @@ skip the question with `--upgrade`, `--reconfigure` or `--fresh`.
 sudo pituner config
 ```
 
-It covers stations (add, edit, remove, RBDS and recording), the Icecast
-connection, Zabbix and email (with a test-email option). It shows your current
-values (press Enter to keep one), checks what you type, hides passwords, keeps
-the comments in your files, and offers to reload the service when you're done.
-It backs up your settings before its first change. Removing a station keeps the
-other stations' stream URLs the same.
+It covers stations (add, edit, remove, RBDS, recording), Icecast, Zabbix and
+email (with a test email). It shows current values (Enter keeps one), validates
+input, hides passwords, keeps your file comments, backs up before its first
+change and offers to reload the service. Removing a station doesn't change the
+other stations' URLs.
 
-Other `pituner` commands: `pituner check` (validate the config),
-`pituner test-email`, and `pituner backup-config`.
+Other commands: `pituner check` (validate config), `pituner test-email`,
+`pituner backup-config`.
 
 ## Configuration reference
 
@@ -306,8 +276,8 @@ Other `pituner` commands: `pituner check` (validate the config),
 |-------------|-----------------|--------------------------------------------------|
 | `NAME`      | the file name   | Station name shown in your player                |
 | `BAND`      | `fm`            | `fm` (stereo) or `wx` (NOAA weather, mono)       |
-| `FREQUENCY` |: (required)    | Frequency in MHz (FM 88–108, WX 162.400–162.550) |
-| `SERIAL`    |:               | Dongle serial (matched by number)                |
+| `FREQUENCY` | required        | Frequency in MHz (FM 88–108, WX 162.400–162.550) |
+| `SERIAL`    | required        | Dongle serial (matched by number)                |
 | `GAIN`      | none (auto)     | Tuner gain in dB, e.g. `40.2`                    |
 | `RBDS`      | `false`         | FM only: send RBDS text and PTY genre to Icecast |
 | `RECORD`    | `false`         | Save this station to 15-minute MP3 files         |
@@ -324,15 +294,13 @@ Other `pituner` commands: `pituner check` (validate the config),
 | `ADMIN_USER`      | `admin`     | Optional: admin login for now-playing updates    |
 | `ADMIN_PASSWORD`  | none        | Optional: if set, used instead of the source login |
 
-The installer fills these in for you; you normally only touch `icecast.conf` if
-you change your Icecast password later.
+The installer fills these in; you'll only edit `icecast.conf` if you change your Icecast password.
 
 ## Zabbix monitoring (optional)
 
-If you run a Zabbix server internally, Pi-Tuner can push **each tuner's own
-items** and alerts to it (no agent needed on the Pi). Every station is
-discovered automatically, so adding or removing a station needs no template
-changes.
+Pi-Tuner can push **each tuner's own items** and alerts to your Zabbix server (no
+agent on the Pi). Stations are discovered automatically, so adding or removing
+one needs no template changes.
 
 1. On your Zabbix server (6.0 or newer), import `zabbix_template.xml`
    (Configuration → Templates → Import).
@@ -343,9 +311,8 @@ changes.
    - `HOSTNAME` = the host name you created in step 2
 4. `sudo systemctl restart pituner.service`
 
-**What each tuner reports.** Tuners are named by their mount, `tuner1`,
-`tuner2`, ... (the station name is in each item's name, for example
-"WLSU: audio level"):
+**What each tuner reports.** Tuners are named by mount (`tuner1`, `tuner2`, …); the
+station name is in each item's name, e.g. "WLSU: audio level":
 
 | Item (`pituner.tuner.<name>[tunerN]`) | What it is |
 |------|------|
@@ -359,68 +326,58 @@ changes.
 | `restarts` | how many times the tuner's pipeline has restarted since the service started |
 | `recording`, `recording.age` | whether it records, and seconds since its newest recording file was written |
 
-There are also host-wide items: the last event, how many tuners are streaming,
-the heartbeat, and an "EAS on any tuner" pulse.
+Host-wide items: last event, tuners streaming, heartbeat, and an "EAS on any tuner" pulse.
 
 **Triggers.** Per tuner: *is down* (not streaming for 2 minutes), *serial not
-found*, *EAS attention tone heard*, *restarting repeatedly* (3 or more restarts
-in 15 minutes), *dead air* (level below the threshold while streaming) and
-*recording stalled* and *overmodulation* (modulation above the limit in at
-least 3 of the last 5 minutes of readings). Host-wide: *heartbeat lost* and *no
-stations streaming*. Tune them with template macros on the host:
+found*, *EAS attention tone heard*, *restarting repeatedly* (3+ restarts in 15
+minutes), *dead air* (level below the threshold while streaming), *recording
+stalled*, and *overmodulation* (above the limit in at least 3 of the last 5
+minutes of readings). Host-wide: *heartbeat lost* and *no stations streaming*.
+Tune them with template macros on the host:
 `{$PITUNER.SILENCE.DB}` (default `-60`), `{$PITUNER.SILENCE.TIME}` (`1m`),
 `{$PITUNER.REC.STALE}` (`300` seconds) and `{$PITUNER.OVERMOD.PCT}` (`105`).
 
 **Deviation and modulation.** Pi-Tuner measures how far each station's carrier
-swings (its deviation), straight from the radio's demodulated signal, and
-reports the highest peak every 10 seconds in kHz and as a percent of 100%
-modulation:
+swings from the demodulated signal and reports the highest peak every 10 seconds,
+in kHz and as a percent of 100% modulation:
 
 | | 100% modulation | Notes |
 |---|---|---|
-| FM broadcast | 75 kHz | Measured on the whole composite signal, so it includes the stereo pilot and RBDS, like a modulation monitor. |
-| NOAA Weather Radio (WX) | about 5 kHz | Narrowband FM. WX is measured after the radio's de-emphasis, so high-pitched peaks read a little low. |
+| FM broadcast | 75 kHz | Measured on the whole composite signal (stereo pilot and RBDS included), like a modulation monitor. |
+| NOAA Weather Radio (WX) | about 5 kHz | Narrowband FM, measured after de-emphasis, so high-pitched peaks read a little low. |
 
 > [!WARNING]
 > **Deviation and modulation readings are less accurate when a station's signal
-> is weak.** Noise on a weak signal adds false peaks, so the numbers can read high
-> (even over 100%) when the station is actually fine, and they can jump around.
-> Pi-Tuner ignores a single noise click, but not sustained noise. For readings
-> you can trust, use a good antenna and a strong, clean signal.
+> is weak.** Noise adds false peaks, so readings can run high (even over 100%)
+> and jump around. Pi-Tuner ignores a single noise click, not sustained noise.
+> Use a good antenna and a strong, clean signal.
 >
 > Treat the numbers as an indicator and a trend, not a calibrated modulation
-> monitor, and don't use them for compliance reporting. Compare against your
-> station's own monitor if you can.
+> monitor, and don't use them for compliance reporting.
 
-Both references can be changed with `FM_FULL_DEVIATION_KHZ` and
-`WX_FULL_DEVIATION_KHZ` in `zabbix.conf`, and `DEVIATION_MONITOR=false` turns the
-measurement off. The conversion to kHz is exact, and the dongle's frequency
-error is removed automatically. The overmodulation trigger fires at 105% by
-default, because well-processed audio normally peaks right at 100% and the
-reading has some tolerance. A weak or noisy signal can trigger it falsely, so
-check the signal quality before acting on it.
+Change the references with `FM_FULL_DEVIATION_KHZ` and `WX_FULL_DEVIATION_KHZ` in
+`zabbix.conf`; `DEVIATION_MONITOR=false` turns the measurement off. The kHz
+conversion is exact and the dongle's frequency error is removed automatically.
+Overmodulation fires at 105% by default, since processed audio normally peaks at
+100%. A weak or noisy signal can trigger it falsely, so check signal quality first.
 
 **How it fills in.** Every `INTERVAL` seconds (default 60) Pi-Tuner sends the
-list of tuners and their values. Zabbix creates the items when it first sees
-the list, so the first values arrive on the next interval, within a couple of
-minutes. A tuner you remove from the config is deleted from Zabbix after 7
-days. Set `LEVEL_MONITOR=false` in `zabbix.conf` to stop sending audio levels
-(it also stops the small level-meter process on each station).
+tuner list and values. Zabbix creates the items on first sight, so values appear
+within a couple of minutes. Removed tuners are deleted after 7 days.
+`LEVEL_MONITOR=false` in `zabbix.conf` stops audio levels (and the level-meter
+process on each station).
 
-**Updating from an older template.** The old template had a single `pituner.status`
-item holding all stations as one JSON text, and two triggers that searched
-it. They're gone. Import the new template with *Delete missing* ticked (or delete
-the old `Pi-Tuner` template first), and re-run the installer or
-`sudo pituner upgrade-config` so `zabbix.conf` gets `LEVEL_MONITOR`.
+**Updating from an older template.** The old single `pituner.status` item and its
+two triggers are gone. Import the new template with *Delete missing* ticked (or
+delete the old `Pi-Tuner` template first), and run `sudo pituner upgrade-config`
+so `zabbix.conf` gets `LEVEL_MONITOR`.
 
-Zabbix being unreachable never affects tuning: sends are best-effort and
-logged.
+An unreachable Zabbix never affects tuning; sends are best-effort and logged.
 
 ## Email alerts (optional)
 
-Pi-Tuner can email you over SMTP, with or without Zabbix. The installer asks
-about it, or edit `smtp.conf` yourself (it's mode 600 because it holds the
-password), set `ENABLED=true`, and restart the service:
+Pi-Tuner can email you over SMTP, with or without Zabbix. The installer asks, or
+edit `smtp.conf` (mode 600), set `ENABLED=true` and restart:
 
 ```sh
 sudo nano /opt/pituner/smtp.conf
@@ -428,8 +385,7 @@ sudo python3 /opt/pituner/tuner.py test-email --dir /opt/pituner   # sends one t
 sudo systemctl restart pituner.service
 ```
 
-`test-email` prints the exact SMTP error if it can't send, which makes it the
-quickest way to get your server settings right.
+`test-email` prints the exact SMTP error if it can't send.
 
 | Key              | Default        | Meaning                                              |
 |------------------|----------------|------------------------------------------------------|
@@ -450,50 +406,46 @@ What you get (the Pi's host name is added to every subject):
 | Email | When |
 |-------|------|
 | `WLSU is DOWN` | A station's stream stopped or its dongle serial wasn't found, and it's still down after `DOWN_DELAY` |
-| `WLSU is back up` | It recovered, with how long it was down. Only sent if the "down" email went out, so a blip that fixes itself sends nothing |
+| `WLSU is back up` | It recovered, with the downtime. Only sent if the "down" email went out |
 | `EAS attention tone heard on WLSU` | The 853 + 960 Hz tone was detected |
-| `Low disk space` / `Disk space recovered` | Only when a station records (`RECORD=true`). Free space under `/opt/pituner` dropped below `DISK_MIN_GB`, then rose well above it |
+| `Low disk space` / `Disk space recovered` | Only when a station records. Free space under `/opt/pituner` fell below `DISK_MIN_GB`, then rose well above it |
 | `Pi-Tuner started` / `Pi-Tuner stopped` | The service started (with each station's status) or is shutting down |
 
 Notes:
 
-- Sending runs in the background, so a slow or unreachable mail server can never
-  hold up the streams. If delivery fails after three tries it's logged to
-  `email.log`, and the password is never written to any log.
-- Gmail, Microsoft 365 and similar services need an app password (or SMTP AUTH
-  turned on) rather than your normal password.
-- The password sits in `smtp.conf` as plain text, as the Zabbix settings do, so
-  keep that file `chmod 600` and don't commit it anywhere.
+- Sending is in the background, so a slow mail server can't hold up the streams.
+  Failures after three tries go to `email.log`; the password is never logged.
+- Gmail, Microsoft 365 and similar need an app password (or SMTP AUTH enabled).
+- The password is plain text in `smtp.conf`: keep it `chmod 600` and out of git.
 
 ## EAS attention-tone detection (optional)
 
-If Zabbix or [email alerts](#email-alerts-optional) are enabled, the Pi can listen for the EAS/SAME **attention signal**:
-a simultaneous 853 Hz + 960 Hz dual-tone broadcast on FM and NOAA WX before
-emergency messages, and alert you when it's heard.
+With Zabbix or [email alerts](#email-alerts-optional) enabled, the Pi listens for
+the EAS/SAME **attention signal**, the 853 Hz + 960 Hz dual tone sent on FM and
+NOAA WX before emergency messages, and alerts you when it's heard.
 
-Set `EAS_DETECT=true` in `zabbix.conf` (the default) for Zabbix alerts; email alerts only need `ALERT_EAS=true` in `smtp.conf` (also the default). When the tone is detected
-on any FM/WX station, the Pi pushes `pituner.eas = 1` to Zabbix (for that tuner's own `eas` item and the host-wide one), holds it for
-~10 seconds, then resets it to `0`, so a trigger on `last()=1` fires and then
-auto-recovers. The station name is logged in `pituner.event`.
+Zabbix alerts need `EAS_DETECT=true` in `zabbix.conf` (the default); email needs
+`ALERT_EAS=true` in `smtp.conf` (also the default). On detection the Pi sets
+`pituner.eas = 1` (that tuner's `eas` item and the host-wide one) for about 10
+seconds, then back to `0`, so a `last()=1` trigger fires and auto-recovers. The
+station is logged in `pituner.event`.
 
-Detection is tone-only (it does not decode the SAME data). The thresholds are
-constants at the top of `tuner.py` (`EAS_TONE_RATIO`, `EAS_HOLD_SECS`,
-`EAS_COOLDOWN_SECS`) if you need to tune them for your signal levels.
+Detection is tone-only; it doesn't decode the SAME data. Tune the thresholds with
+the constants at the top of `tuner.py` (`EAS_TONE_RATIO`, `EAS_HOLD_SECS`,
+`EAS_COOLDOWN_SECS`).
 
 ## RBDS now-playing (optional)
 
-Most US FM stations broadcast **RBDS** (the North American flavor of RDS), a
-tiny data stream hidden in the FM signal. It carries the station's 8-character
-**PS** name (e.g. `KXYZ-FM`) and a **RadioText (RT)** line, which is usually the
-current artist and title. Pi-Tuner can decode it and show it as the Icecast
-"now playing" text, so your player displays something like:
+Most US FM stations broadcast **RBDS** (the North American RDS), a small data
+stream in the FM signal with the 8-character **PS** station name (e.g. `KXYZ-FM`)
+and a **RadioText (RT)** line, usually the current artist and title. Pi-Tuner
+shows it as the Icecast "now playing" text:
 
 ```
 Artist - Title (KXYZ-FM)
 ```
 
-Turn it on per FM station by adding `RBDS=true` to its file (the installer asks
-you), then reload:
+Turn it on per FM station with `RBDS=true` (the installer asks), then reload:
 
 ```sh
 sudo systemctl reload pituner.service
@@ -506,53 +458,43 @@ rtl_fm ──┬──▶ demux ──▶ ffmpeg ──▶ Icecast  (audio)
          └──▶ redsea ──▶ tuner.py rbds-meta ──▶ Icecast /admin/metadata  (now playing)
 ```
 
-- The raw 192 kHz FM signal is split before stereo decoding. One copy goes to the
-  audio path as usual; the other goes to
-  [redsea](https://github.com/windytan/redsea), which decodes RBDS and outputs
-  JSON.
-- `tuner.py rbds-meta` combines the latest RT and PS into `RT (PS)` and updates
-  the stream's metadata on its mount (`/tuner1`, `/tuner2`, …). If a station
-  sends only RT or only PS, that one is shown by itself. Only changes are sent.
-- The `(PS)` after the text is the station's PS name. Some stations scroll their
-  PS ("Station", "Z93 The", "#1 Hit", "Music"), which isn't a name. When Pi-Tuner
-  sees the PS change several times in a minute, it shows the callsign worked out
-  from the station's PI code instead (or nothing if there isn't one), so the
-  now-playing text doesn't flip every few seconds. The first update after a
-  start waits about 12 seconds while it tells the two apart.
-- The Icecast stream **name** is not changed: it stays the `NAME` from the
-  station file. (Icecast only sets the name when a source connects.)
-- Updates use the `source` login and `SOURCE_PASSWORD` from `icecast.conf`. To use
-  the admin login instead, set `ADMIN_USER` and `ADMIN_PASSWORD` there.
-- The Icecast **genre** is the station's RBDS **PTY** (program type), such as
-  `Country`, `Top 40` or `Classic rock`. Icecast only reads the genre when a
-  stream connects, so Pi-Tuner listens for the PTY for up to 8 seconds just
-  before it starts each RBDS station. That adds a short delay at startup and
-  after a reload, and a PTY that changes later is picked up at the next restart.
-  If no PTY is heard, or the station sends "No PTY", the genre is `Radio`. FM
-  stations without `RBDS=true` are `Radio` too.
-- WX stations have no RBDS, and `RBDS=true` is ignored for the now-playing text.
-  Their genre is always `Weather`, with or without `RBDS`.
+- The raw 192 kHz FM signal is split before stereo decoding: one copy to the
+  audio path, the other to [redsea](https://github.com/windytan/redsea), which
+  outputs RBDS as JSON.
+- `rbds-meta` combines the latest RT and PS into `RT (PS)` and updates the
+  mount's metadata, sending only changes. If only RT or only PS is sent, that
+  one is shown alone.
+- Some stations scroll their PS ("Station", "Z93 The", "#1 Hit"). If the PS
+  changes several times a minute, Pi-Tuner shows the callsign worked out from the
+  PI code instead (or nothing). The first update after a start waits about 12
+  seconds while it tells the two apart.
+- The stream **name** stays the station's `NAME`; Icecast only sets it when a
+  source connects.
+- Updates use the `source` login from `icecast.conf`, or `ADMIN_USER` and
+  `ADMIN_PASSWORD` if set.
+- The **genre** is the station's RBDS **PTY** (e.g. `Country`, `Top 40`). Icecast
+  only reads it when a stream connects, so Pi-Tuner listens up to 8 seconds
+  before starting each RBDS station (a short startup delay). A PTY that changes
+  later is picked up at the next restart. With no PTY (or "No PTY"), and for FM
+  stations without `RBDS=true`, the genre is `Radio`. WX stations have no RBDS
+  and are always `Weather`.
 
-To check it's working, open `http://<pi>:8000/status-json.xsl` (look for `title`
-and `genre` on the mount) or watch `tail -f /var/www/pituner/rbds.log`.
+To check it, open `http://<pi>:8000/status-json.xsl` (see `title` and `genre` on
+the mount) or `tail -f /var/www/pituner/rbds.log`.
 
 Notes:
 
-- RBDS needs a clean signal. Weak or noisy stations may decode slowly or not at
-  all; try adjusting `GAIN` and your antenna.
-- Some stations send only a PS name and no RadioText, or send ads and station
-  slogans in RT instead of song info. Pi-Tuner shows whatever the station sends.
-- `redsea` is built from source by the installer. If it isn't installed, a
-  station with `RBDS=true` still streams audio normally and a warning is logged;
-  RBDS is just skipped.
-- Like the EAS detector, the RBDS helper is best-effort and can never interrupt
-  the audio.
+- RBDS needs a clean signal; for weak stations try `GAIN` and your antenna.
+- Some stations send only a PS name, or ads and slogans in RT. Pi-Tuner shows
+  whatever is sent.
+- The installer builds `redsea` from source. Without it, a station with
+  `RBDS=true` still streams and RBDS is skipped with a warning.
+- Like EAS detection, RBDS is best-effort and never interrupts the audio.
 
 ## Recording (optional)
 
-Pi-Tuner can keep a log of what a station broadcast. Add `RECORD=true` to a
-station's file (the installer asks you), then reload. The audio is saved as
-**128 kbps MP3**, the same format as the Icecast stream, in **15-minute files**:
+Add `RECORD=true` to a station's file (the installer asks), then reload. Audio is
+saved as **128 kbps MP3**, matching the stream, in **15-minute files**:
 
 ```
 /opt/pituner/recordings/STATION_NAME/YYYY/MM/DD/YYMMDD_HHMMSS_STATION_NAME.mp3
@@ -565,41 +507,34 @@ For example:
 /opt/pituner/recordings/WXYZ-FM/2026/03/05/260305_141500_WXYZ-FM.mp3
 ```
 
-- **HHMMSS is when that file began**, in the Pi's local time (check it with
-  `timedatectl`).
-- Files are cut on the clock, at :00, :15, :30 and :45. The first file after
-  Pi-Tuner starts, reloads or restarts a station is shorter, and its name shows
-  the time it actually began.
-- Spaces in a station name become underscores in the folder and file names.
-- Recording runs beside the stream and can't interrupt it. If the disk fills or
-  the encoder fails, the problem is logged to `recordings.log` and the stream
-  keeps playing. WX stations record the same mono audio that they stream.
-- **RBDS.log (FM only).** If a station has both `RBDS=true` and `RECORD=true`,
-  Pi-Tuner also keeps a text log of the now-playing text in that day's folder:
+- **HHMMSS is when the file began**, in the Pi's local time (see `timedatectl`).
+- Files are cut at :00, :15, :30 and :45. The first file after a start, reload or
+  restart is shorter.
+- Spaces in a station name become underscores.
+- Recording can't interrupt the stream. Disk-full or encoder problems go to
+  `recordings.log` and the stream keeps playing. WX records its mono audio.
+- **RBDS.log (FM only).** With both `RBDS=true` and `RECORD=true`, Pi-Tuner also
+  logs the now-playing text in that day's folder:
 
   ```
   /opt/pituner/recordings/STATION_NAME/YYYY/MM/DD/RBDS.log
   ```
 
-  Every RadioText change is logged, in the Pi's local time, with a new file each
-  day, one line per change:
+  One line per RadioText change, in local time, with a new file each day:
 
   ```
   261001 09:21:15: Metallica - Enter Sandman (WXTB)
   261001 09:23:16: Avenged Sevenfold - Bat Country (WXTB)
   ```
 
-  - A repeat of the text that's already showing is not logged again, but a text
-    coming back after something else (a station rotating song and slogan) is.
-  - Only plain RadioText is logged. RadioText Plus (the tagged artist and title
-    fields) is ignored.
-  - `(WXTB)` is the station's PS name. If a station scrolls its PS, the callsign
-    worked out from its PI code is shown instead, or nothing.
-  - WX stations don't have an `RBDS.log`.
+  - Repeats of the text already showing aren't logged; a text returning after
+    something else (song, slogan, song) is.
+  - Only plain RadioText is logged, not RadioText Plus.
+  - `(WXTB)` is the PS name, or the PI-derived callsign if the PS scrolls.
+  - WX stations have no `RBDS.log`.
 - **Plan for disk space.** Each station uses about 1.4 GB a day (58 MB an hour).
-  Set `RECORD_KEEP_DAYS=14` in the station file to delete files (and `RBDS.log`s)
-  older than 14 days, plus any empty date folders. Pi-Tuner checks hourly. Leave it out to
-  keep everything.
+  `RECORD_KEEP_DAYS=14` deletes files (and `RBDS.log`s) older than 14 days, plus
+  empty date folders, checked hourly. Leave it out to keep everything.
 
 ## Troubleshooting
 
@@ -616,8 +551,7 @@ For example:
 | No `RBDS.log`                    | FM station with both `RBDS=true` and `RECORD=true`? Is `redsea` installed? |
 | No alert emails                  | `sudo python3 /opt/pituner/tuner.py test-email --dir /opt/pituner`; `tail /var/www/pituner/email.log` |
 
-The service automatically restarts any station whose pipeline dies (dongle
-unplugged, Icecast unreachable, decode failure), backing off between attempts.
+The service restarts any station whose pipeline dies, backing off between attempts.
 
 ## Local logs
 
@@ -632,8 +566,7 @@ The Pi also keeps rotating logs on disk under `/var/www/pituner/`:
 | `recordings.log` | Recording problems (disk full, encoder errors)                   |
 | `email.log`  | Email alerts sent, and any delivery failures                         |
 
-They rotate by size (10 MB, keeping 5 compressed copies) via
-`/etc/logrotate.d/pituner`. View them with e.g. `tail -f /var/www/pituner/tuner.log`.
+They rotate at 10 MB (5 compressed copies kept) via `/etc/logrotate.d/pituner`.
 
 ## Project layout
 
@@ -654,16 +587,13 @@ They rotate by size (10 MB, keeping 5 compressed copies) via
 /usr/local/bin/pituner                # the `pituner` command
 ```
 
-The repository also has `install.sh` / `uninstall.sh`, `logrotate.conf`, a
-`tests/` folder (`python3 -m unittest discover -s tests`) and the `docs/images`
-used by this README. The installer additionally places the `demux` and `redsea`
-decoders in `/usr/local/bin`.
+The repo also has `install.sh`, `uninstall.sh`, `logrotate.conf`, `tests/`
+(`python3 -m unittest discover -s tests`) and `docs/images`. The installer puts
+the `demux` and `redsea` decoders in `/usr/local/bin`.
 
 ## Uninstall
 
-Remove the service, application files, the `pituner` user, the `pituner`
-command, and the `demux` and `redsea` decoders (system packages are left in
-place):
+Removes the service, application files, `pituner` user and command, and the `demux` and `redsea` decoders (system packages stay):
 
 ```sh
 sudo ./uninstall.sh          # asks before removing each thing
