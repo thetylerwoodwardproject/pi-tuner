@@ -71,6 +71,21 @@ class LoggerTests(unittest.TestCase):
         events = [(at(8, 59), {"ps": "WXTB"})] + [(at(9, i), rt(t)) for i, t in enumerate(seq)]
         self.assertEqual(self.bodies(events), [f"{t} (WXTB)" for t in seq])
 
+    def test_same_text_minutes_apart_is_logged_once(self):
+        song = "Metallica - Enter Sandman"
+        events = [(at(9, 20), {"ps": "WXTB"}), (at(9, 21, 15), rt(song)),
+                  (at(9, 22, 15), rt(song)), (at(9, 23, 15), rt(song))]
+        self.assertEqual(self.feed_all(events), ["261001 09:21:15: Metallica - Enter Sandman (WXTB)"])
+
+    def test_same_text_returning_after_something_else_is_logged_again(self):
+        song = "Metallica - Enter Sandman"
+        events = [(at(9, 20), {"ps": "WXTB"}), (at(9, 21, 15), rt(song)),
+                  (at(9, 22, 15), rt("98ROCK")), (at(9, 23, 15), rt(song))]
+        self.assertEqual(self.feed_all(events), [
+            "261001 09:21:15: Metallica - Enter Sandman (WXTB)",
+            "261001 09:22:15: 98ROCK (WXTB)",
+            "261001 09:23:15: Metallica - Enter Sandman (WXTB)"])
+
     def test_repeated_rt_messages_are_one_entry(self):
         out = self.feed_all([(at(9, 0, i), rt("A - B")) for i in range(5)])
         self.assertEqual(len(out), 1)
