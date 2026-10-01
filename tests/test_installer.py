@@ -218,9 +218,11 @@ class StaticTests(unittest.TestCase):
             r = subprocess.run([shell, "-n", os.path.join(REPO, name)], capture_output=True, text=True)
             self.assertEqual(r.returncode, 0, r.stderr)
 
-    def test_new_installs_write_the_eas_keys(self):
+    def test_new_installs_write_the_eas_and_level_keys(self):
         self.assertEqual(INSTALL.count("EAS_DETECT=true"), 2)
         self.assertEqual(INSTALL.count("KEY_EAS=pituner.eas"), 2)
+        self.assertEqual(INSTALL.count("LEVEL_MONITOR=true"), 2)
+        self.assertNotIn("KEY_STATUS", INSTALL)          # the JSON status item is gone
 
     def test_unit_supports_reload(self):
         self.assertIn("ExecReload=/bin/kill -HUP $MAINPID",

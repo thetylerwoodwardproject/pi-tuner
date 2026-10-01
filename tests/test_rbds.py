@@ -22,7 +22,7 @@ class BuildCommandTests(unittest.TestCase):
         cmd = tuner.build_command(station(), ICE, 0, rbds=True)
         self.assertIn("redsea", cmd)
         self.assertLess(cmd.index("redsea"), cmd.index("demux"))
-        self.assertIn('rbds-meta --dir "/opt/pituner" "/tuner1"', cmd)
+        self.assertIn('rbds-meta --dir "/opt/pituner" --tuner tuner1 "/tuner1"', cmd)
 
     def test_no_rbds_when_disabled_or_unavailable(self):
         self.assertNotIn("redsea", tuner.build_command(station(rbds=False), ICE, 0, rbds=True))

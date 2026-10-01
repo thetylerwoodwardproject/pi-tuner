@@ -595,12 +595,12 @@ SERVER=${server}
 PORT=${port}
 HOSTNAME=${hostname}
 KEY_EVENT=pituner.event
-KEY_STATUS=pituner.status
 KEY_ACTIVE=pituner.stations_active
 KEY_HEARTBEAT=pituner.heartbeat
 KEY_EAS=pituner.eas
 INTERVAL=60
 EAS_DETECT=true
+LEVEL_MONITOR=true
 # ─── end user settings ─────────────────────────────
 EOF
   chown pituner:pituner "${APP_DIR}/zabbix.conf"
@@ -617,12 +617,12 @@ SERVER=
 PORT=10051
 HOSTNAME=pituner
 KEY_EVENT=pituner.event
-KEY_STATUS=pituner.status
 KEY_ACTIVE=pituner.stations_active
 KEY_HEARTBEAT=pituner.heartbeat
 KEY_EAS=pituner.eas
 INTERVAL=60
 EAS_DETECT=true
+LEVEL_MONITOR=true
 # ─── end user settings ─────────────────────────────
 EOF
   chown pituner:pituner "${APP_DIR}/zabbix.conf"

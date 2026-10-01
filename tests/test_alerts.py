@@ -382,7 +382,8 @@ class TunerWiringTests(unittest.TestCase):
             t.load_config()
             fake = FakeMailer()
             t.alerts.mailer = fake
-            st = tuner.Station({"name": "WLSU"})
+            st = tuner.Station({"name": "WLSU", "band": "fm", "freq": 88.9, "serial": "1",
+                                "mount": "/tuner1", "gain": ""})
             with mock.patch.object(tuner, "log"):
                 t.set_status(st, "streaming")             # stopped -> streaming at startup
                 t.set_status(st, "down", "exit code 1")
