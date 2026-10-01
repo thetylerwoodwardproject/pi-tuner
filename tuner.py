@@ -23,6 +23,16 @@ Usage:
              record raw s16le PCM from stdin to 128 kbps MP3 files, one per
              15 minutes, under <dir>/recordings/<name>/YYYY/MM/DD/.
 
+    tuner.py config --dir /opt/pituner
+             interactive menu to edit stations, Icecast, Zabbix and email.
+
+    tuner.py upgrade-config --dir /opt/pituner [--dry-run]
+             add settings that newer versions understand to existing config
+             files, without changing any value you've set.
+
+    tuner.py backup-config --dir /opt/pituner
+             copy the config files to backups/<timestamp>/ (keeps the last 5).
+
     tuner.py test-email --dir /opt/pituner [--to ADDRESS]
              send one test message using smtp.conf and report any SMTP error.
 
@@ -90,12 +100,16 @@ def log(msg, err=False):
 
 # -------------------------------------------------------------- config files
 
+_QUOTED_VALUE_RE = re.compile(r'^"(.*?)"\s*(?:#.*)?$')
+
+
 def parse_keyvalue(path):
     """Parse a flat KEY=value file into a lowercase-keyed dict.
 
     Blank lines and full-line comments are ignored; a trailing ``# comment``
-    (preceded by whitespace) is stripped from a value. A missing file yields an
-    empty dict.
+    (preceded by whitespace) is stripped from a value. A value wrapped in double
+    quotes is taken literally, so it may contain `` #``. A missing file yields
+    an empty dict.
     """
     conf = {}
     try:
@@ -108,11 +122,278 @@ def parse_keyvalue(path):
             if not line or line.startswith("#") or "=" not in line:
                 continue
             key, value = line.split("=", 1)
-            value = re.split(r"\s+#", value)[0].strip()
-            if len(value) >= 2 and value[0] == value[-1] == '"':
-                value = value[1:-1]
+            value = value.strip()
+            quoted = _QUOTED_VALUE_RE.match(value)
+            if quoted:
+                value = quoted.group(1)
+            else:
+                value = re.split(r"\s+#", value)[0].strip()
             conf[key.strip().lower()] = value
     return conf
+
+
+# ------------------------------------------------- editing config files in place
+
+USER_SETTINGS_END = "# ─── end user settings"
+
+
+def format_conf_value(value):
+    """Render a value so parse_keyvalue reads it back unchanged."""
+    value = str(value)
+    if value != value.strip() or re.search(r"\s#", value) or value.startswith('"'):
+        return '"' + value + '"'
+    return value
+
+
+def _read_lines(path):
+    with open(path, encoding="utf-8", errors="replace") as f:
+        return f.read().splitlines()
+
+
+def _atomic_write(path, text, mode=None):
+    """Write via a temp file + rename, keeping the file's mode and owner."""
+    try:
+        st = os.stat(path)
+        mode, uid, gid = st.st_mode & 0o7777, st.st_uid, st.st_gid
+    except OSError:
+        uid = gid = None
+        mode = 0o600 if mode is None else mode
+    directory = os.path.dirname(path) or "."
+    tmp = os.path.join(directory, f".{os.path.basename(path)}.tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, mode)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.chmod(tmp, mode)
+        if uid is not None:
+            try:
+                os.chown(tmp, uid, gid)
+            except OSError:
+                pass
+        os.replace(tmp, path)
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _insert_index(lines):
+    """Where new lines go: just above the end-of-settings marker, else the end."""
+    for i, line in enumerate(lines):
+        if line.strip().startswith(USER_SETTINGS_END):
+            return i
+    return len(lines)
+
+
+def update_keyvalue(path, changes):
+    """Set keys in a KEY=value file without disturbing anything else.
+
+    Comments, blank lines and ordering are kept. An existing key keeps its
+    trailing ``# comment``; a commented-out hint (``# KEY=...``) is switched on;
+    an unknown key is added above the end-of-settings marker (or appended).
+    Returns True if the file changed.
+    """
+    lines = _read_lines(path)
+    original = list(lines)
+    for key, value in changes.items():
+        rendered = format_conf_value(value)
+        active = re.compile(rf"^(\s*){re.escape(key)}(\s*=\s*)(.*)$", re.IGNORECASE)
+        hint = re.compile(rf"^\s*#\s*{re.escape(key)}\s*=\s*(.*)$", re.IGNORECASE)
+        for i, line in enumerate(lines):
+            m = active.match(line)
+            if m:
+                rest = m.group(3)
+                comment = ""
+                if not rest.lstrip().startswith('"'):
+                    c = re.search(r"\s+#.*$", rest)
+                    comment = c.group(0) if c else ""
+                else:
+                    q = _QUOTED_VALUE_RE.match(rest.strip())
+                    if q:
+                        c = re.search(r'"\s+(#.*)$', rest)
+                        comment = "  " + c.group(1) if c else ""
+                lines[i] = f"{m.group(1)}{key.upper()}{m.group(2)}{rendered}{comment}"
+                break
+        else:
+            for i, line in enumerate(lines):
+                m = hint.match(line)
+                if m:
+                    c = re.search(r"\s+#.*$", m.group(1))
+                    lines[i] = f"{key.upper()}={rendered}{c.group(0) if c else ''}"
+                    break
+            else:
+                lines.insert(_insert_index(lines), f"{key.upper()}={rendered}")
+    if lines == original:
+        return False
+    _atomic_write(path, "\n".join(lines) + "\n")
+    return True
+
+
+# (key, default, written active?, comment, only for this band)
+CONFIG_KEYS = {
+    "icecast.conf": [
+        ("HOST", "localhost", True, "Icecast host", None),
+        ("PORT", "8000", True, "Icecast source port", None),
+        ("SOURCE_PASSWORD", "", True, "must match <source-password> in icecast.xml", None),
+        ("ADMIN_USER", "admin", False, "admin login for now-playing updates", None),
+        ("ADMIN_PASSWORD", "", False, "if set, used instead of the source login", None),
+    ],
+    "zabbix.conf": [
+        ("ENABLED", "false", True, "true to send alerts to Zabbix", None),
+        ("SERVER", "", True, "your Zabbix server", None),
+        ("PORT", "10051", True, "Zabbix trapper port", None),
+        ("HOSTNAME", "pituner", True, "the Zabbix host the template is attached to", None),
+        ("KEY_EVENT", "pituner.event", True, "item key, must match the template", None),
+        ("KEY_STATUS", "pituner.status", True, "item key, must match the template", None),
+        ("KEY_ACTIVE", "pituner.stations_active", True, "item key, must match the template", None),
+        ("KEY_HEARTBEAT", "pituner.heartbeat", True, "item key, must match the template", None),
+        ("KEY_EAS", "pituner.eas", True, "item key, must match the template", None),
+        ("INTERVAL", "60", True, "status snapshot / heartbeat interval, seconds", None),
+        ("EAS_DETECT", "false", True, "true to detect the EAS attention tone", None),
+    ],
+    "smtp.conf": [
+        ("ENABLED", "false", True, "true to send email alerts", None),
+        ("HOST", "", True, "SMTP server", None),
+        ("PORT", "587", True, "SMTP port", None),
+        ("SECURITY", "starttls", True, "starttls, ssl or none", None),
+        ("VERIFY_TLS", "true", True, "false for a self-signed internal relay", None),
+        ("USERNAME", "", True, "blank if the server needs no login", None),
+        ("PASSWORD", "", True, "keep this file mode 600", None),
+        ("FROM", "", True, "sender address (default pituner@<host name>)", None),
+        ("TO", "", True, "recipients, separated by commas", None),
+        ("SUBJECT_PREFIX", "[Pi-Tuner]", True, "start of every subject", None),
+        ("TIMEOUT", "10", True, "seconds to wait on the SMTP server", None),
+        ("ALERT_STATION", "true", True, "station down / recovered emails", None),
+        ("ALERT_EAS", "true", True, "EAS attention tone emails", None),
+        ("ALERT_DISK", "true", True, "low recording disk space emails", None),
+        ("ALERT_SERVICE", "true", True, "service started / stopped emails", None),
+        ("DOWN_DELAY", "120", True, "seconds a station must stay down before the email", None),
+        ("DISK_MIN_GB", "2", True, "free space that triggers the disk email", None),
+    ],
+    "station": [
+        ("RBDS", "false", False, "fm only: RBDS text and PTY genre to Icecast", "fm"),
+        ("RECORD", "false", False, "save 15-minute MP3 recordings", None),
+        ("RECORD_KEEP_DAYS", "", False, "delete recordings older than this many days", None),
+    ],
+}
+
+CONFIG_HEADERS = {
+    "smtp.conf": "# Pi-Tuner SMTP email alerts. Keep this file mode 600: it holds the password.",
+    "zabbix.conf": "# Pi-Tuner Zabbix trapper settings",
+    "icecast.conf": "# Pi-Tuner Icecast connection (shared by all stations)",
+}
+
+
+def _spec_line(key, default, active, comment):
+    body = f"{key}={format_conf_value(default)}"
+    if comment:
+        body += f"  # {comment}"
+    return body if active else f"# {body}"
+
+
+def render_config(name):
+    """Text of a brand-new config file with every key at its default."""
+    lines = [CONFIG_HEADERS[name], "# ─── user settings ─────────────────────────────────"]
+    lines += [_spec_line(k, d, a, c) for k, d, a, c, _ in CONFIG_KEYS[name]]
+    lines.append(USER_SETTINGS_END + " ─────────────────────────────")
+    return "\n".join(lines) + "\n"
+
+
+def _has_key(lines, key):
+    pat = re.compile(rf"^\s*#?\s*{re.escape(key)}\s*=", re.IGNORECASE)
+    return any(pat.match(line) for line in lines)
+
+
+def _missing_specs(path, specs, band=None):
+    lines = _read_lines(path)
+    return [sp for sp in specs
+            if (sp[4] is None or sp[4] == band) and not _has_key(lines, sp[0])]
+
+
+def _config_targets(base_dir):
+    """(display name, path, spec key, band) for each existing config file."""
+    targets = []
+    for name in ("icecast.conf", "zabbix.conf", "smtp.conf"):
+        path = os.path.join(base_dir, name)
+        if os.path.isfile(path):
+            targets.append((name, path, name, None))
+    stations = os.path.join(base_dir, "stations")
+    if os.path.isdir(stations):
+        for fname in sorted(os.listdir(stations)):
+            if fname.endswith(".conf"):
+                path = os.path.join(stations, fname)
+                band = (parse_keyvalue(path).get("band") or "fm").lower()
+                targets.append((f"stations/{fname}", path, "station", band))
+    return targets
+
+
+def missing_config_keys(base_dir):
+    """{file: [keys]} that existing config files lack (read-only)."""
+    out = {}
+    for display, path, spec, band in _config_targets(base_dir):
+        missing = [sp[0] for sp in _missing_specs(path, CONFIG_KEYS[spec], band)]
+        if missing:
+            out[display] = missing
+    if not os.path.isfile(os.path.join(base_dir, "smtp.conf")):
+        out["smtp.conf"] = ["(new file)"]
+    return out
+
+
+def upgrade_config(base_dir):
+    """Add keys that newer versions understand to existing config files.
+
+    Never changes an existing value. A key (active or commented) that's already
+    in the file counts as handled, so this is safe to run any number of times.
+    Returns {file: [keys added]}.
+    """
+    added = {}
+    smtp = os.path.join(base_dir, "smtp.conf")
+    if not os.path.isfile(smtp) and os.path.isdir(base_dir):
+        _atomic_write(smtp, render_config("smtp.conf"), mode=0o600)
+        try:
+            st = os.stat(base_dir)
+            os.chown(smtp, st.st_uid, st.st_gid)
+        except OSError:
+            pass
+        added["smtp.conf"] = ["(new file)"]
+    for display, path, spec, band in _config_targets(base_dir):
+        if display == "smtp.conf" and "smtp.conf" in added:
+            continue
+        specs = _missing_specs(path, CONFIG_KEYS[spec], band)
+        if not specs:
+            continue
+        lines = _read_lines(path)
+        at = _insert_index(lines)
+        lines[at:at] = [_spec_line(k, d, a, c) for k, d, a, c, _ in specs]
+        _atomic_write(path, "\n".join(lines) + "\n")
+        added[display] = [sp[0] for sp in specs]
+    return added
+
+
+def backup_config(base_dir, keep=5):
+    """Copy the config files and stations/ to backups/<timestamp>/ (modes kept),
+    keeping only the newest ``keep`` backups. Returns the new folder or None."""
+    files = [(name, path) for name, path, _, _ in _config_targets(base_dir)]
+    if not files:
+        return None
+    root = os.path.join(base_dir, "backups")
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    dest = os.path.join(root, stamp)
+    n = 1
+    while os.path.exists(dest):
+        n += 1
+        dest = os.path.join(root, f"{stamp}-{n}")
+    for name, path in files:
+        target = os.path.join(dest, name)
+        os.makedirs(os.path.dirname(target), exist_ok=True)
+        shutil.copy2(path, target)
+    os.chmod(dest, 0o700)
+    old = sorted(d for d in os.listdir(root) if os.path.isdir(os.path.join(root, d)))
+    for name in old[:-keep]:
+        shutil.rmtree(os.path.join(root, name), ignore_errors=True)
+    return dest
 
 
 def _parse_float(value):
@@ -1418,6 +1699,11 @@ def run_check(base_dir):
     zbx_state = (f"enabled -> {tuner.zbx.server}:{tuner.zbx.port}"
                  if tuner.zbx.enabled else "disabled")
     log(f"zabbix: {zbx_state}")
+    missing = missing_config_keys(base_dir)
+    if missing:
+        total = sum(len(v) for v in missing.values())
+        log(f"config: {total} setting(s) from newer versions are missing in "
+            f"{len(missing)} file(s); run: tuner.py upgrade-config --dir {base_dir}")
     mail = tuner.mailer
     if mail.enabled:
         log(f"email: {mail.host}:{mail.port} ({mail.security}) from {mail.from_addr} to "
@@ -1460,6 +1746,39 @@ def _main_detect_eas(argv):
     args = parser.parse_args(argv)
     run_eas_detector(args.dir, args.name, args.rate, args.channels)
     return 0
+
+
+def _main_upgrade_config(argv):
+    parser = argparse.ArgumentParser(prog="tuner.py upgrade-config")
+    parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
+    parser.add_argument("--dry-run", action="store_true", help="only list what's missing")
+    args = parser.parse_args(argv)
+    result = missing_config_keys(args.dir) if args.dry_run else upgrade_config(args.dir)
+    if not result:
+        print("Config files are up to date; nothing to add.")
+        return 0
+    verb = "Missing from" if args.dry_run else "Added to"
+    for name, keys in result.items():
+        print(f"{verb} {name}: {', '.join(keys)}")
+    return 0
+
+
+def _main_backup_config(argv):
+    parser = argparse.ArgumentParser(prog="tuner.py backup-config")
+    parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
+    args = parser.parse_args(argv)
+    dest = backup_config(args.dir)
+    print(f"Backed up settings to {dest}" if dest else "No settings to back up.")
+    return 0
+
+
+def _main_config(argv):
+    parser = argparse.ArgumentParser(prog="tuner.py config")
+    parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
+    args = parser.parse_args(argv)
+    sys.path.insert(0, os.path.dirname(TUNER_PATH))
+    import configure  # noqa: PLC0415 - only needed for the interactive menu
+    return configure.main(args.dir)
 
 
 def _main_test_email(argv):
@@ -1513,6 +1832,12 @@ def main(argv=None):
         argv = sys.argv[1:]
     if argv and argv[0] == "detect-eas":
         return _main_detect_eas(argv[1:])
+    if argv and argv[0] == "upgrade-config":
+        return _main_upgrade_config(argv[1:])
+    if argv and argv[0] == "backup-config":
+        return _main_backup_config(argv[1:])
+    if argv and argv[0] == "config":
+        return _main_config(argv[1:])
     if argv and argv[0] == "test-email":
         return _main_test_email(argv[1:])
     if argv and argv[0] == "record":

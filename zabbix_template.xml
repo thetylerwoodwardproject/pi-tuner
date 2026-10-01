@@ -1,17 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <zabbix_export>
-    <version>5.0</version>
-    <date>2026-09-17T00:00:00Z</date>
+    <version>6.0</version>
+    <date>2026-10-01T00:00:00Z</date>
     <groups>
         <group>
+            <uuid>7df96b18c230490a9a0a9e2307226338</uuid>
             <name>Templates</name>
         </group>
     </groups>
     <templates>
         <template>
+            <uuid>1b4a31dbcdbd43c183895799e6a72cf9</uuid>
             <template>Pi-Tuner</template>
             <name>Pi-Tuner</name>
-            <description>Pi-Tuner SDR streaming appliance. Data is pushed by tuner.py on the Pi using the Zabbix trapper (zabbix_sender) protocol. Attach this template to the Zabbix host named to match HOSTNAME in zabbix.conf.</description>
+            <description>Pi-Tuner SDR streaming appliance. Data is pushed by tuner.py on the Pi using the Zabbix trapper (zabbix_sender) protocol. Attach this template to the Zabbix host named to match HOSTNAME in zabbix.conf. Requires Zabbix 6.0 or newer.</description>
             <groups>
                 <group>
                     <name>Templates</name>
@@ -19,98 +21,104 @@
             </groups>
             <items>
                 <item>
+                    <uuid>041a777570bf4f1e9f496abc6e162b2d</uuid>
                     <name>Pi-Tuner event</name>
                     <type>TRAP</type>
                     <key>pituner.event</key>
                     <delay>0</delay>
                     <history>7d</history>
                     <trends>0</trends>
-                    <status>ENABLED</status>
                     <value_type>TEXT</value_type>
                     <description>Last event pushed by the Pi-Tuner (station started/down/recovered, serial not found, config errors).</description>
                 </item>
                 <item>
+                    <uuid>671a97db3e804498bb2349e6f5b6ce2f</uuid>
                     <name>Pi-Tuner status</name>
                     <type>TRAP</type>
                     <key>pituner.status</key>
                     <delay>0</delay>
                     <history>7d</history>
                     <trends>0</trends>
-                    <status>ENABLED</status>
                     <value_type>TEXT</value_type>
                     <description>JSON snapshot of per-station status, e.g. {"station1":"streaming","station2":"down"}. Refreshed on every heartbeat and on status changes.</description>
+                    <triggers>
+                        <trigger>
+                            <uuid>07340d40880a486b9fa212a3169e8954</uuid>
+                            <expression>find(/Pi-Tuner/pituner.status,#1,"like","down")=1</expression>
+                            <name>Pi-Tuner station down</name>
+                            <priority>HIGH</priority>
+                            <description>At least one station has a pipeline that exited unexpectedly (dongle unplugged, Icecast unreachable, or decode failure).</description>
+                        </trigger>
+                        <trigger>
+                            <uuid>10f2ddc90eeb4f92a44b5dbc0f04c4d4</uuid>
+                            <expression>find(/Pi-Tuner/pituner.status,#1,"like","serial_not_found")=1</expression>
+                            <name>Pi-Tuner serial not found</name>
+                            <priority>HIGH</priority>
+                            <description>A configured dongle serial is not present on any connected device.</description>
+                        </trigger>
+                    </triggers>
                 </item>
                 <item>
+                    <uuid>8e2c0bf6525c40ecb93d885fd0da7ec7</uuid>
                     <name>Pi-Tuner stations active</name>
                     <type>TRAP</type>
                     <key>pituner.stations_active</key>
                     <delay>0</delay>
                     <history>7d</history>
                     <trends>0</trends>
-                    <status>ENABLED</status>
                     <value_type>UNSIGNED</value_type>
                     <description>Number of stations currently streaming.</description>
+                    <triggers>
+                        <trigger>
+                            <uuid>9d9514522d944f10921aacf3805418fc</uuid>
+                            <expression>last(/Pi-Tuner/pituner.stations_active)=0</expression>
+                            <name>Pi-Tuner no stations streaming</name>
+                            <priority>WARNING</priority>
+                            <description>Zero stations are currently streaming.</description>
+                        </trigger>
+                    </triggers>
                 </item>
                 <item>
+                    <uuid>8c5e63fd0dc345a3b4817345dfa2088d</uuid>
                     <name>Pi-Tuner heartbeat</name>
                     <type>TRAP</type>
                     <key>pituner.heartbeat</key>
                     <delay>0</delay>
                     <history>7d</history>
                     <trends>0</trends>
-                    <status>ENABLED</status>
                     <value_type>UNSIGNED</value_type>
                     <description>Liveness marker sent every INTERVAL seconds (zabbix.conf). A missing value means the Pi or tuner.py is down.</description>
+                    <triggers>
+                        <trigger>
+                            <uuid>496aeb0a24e74212a0d2ab109b210a7c</uuid>
+                            <expression>nodata(/Pi-Tuner/pituner.heartbeat,5m)=1</expression>
+                            <name>Pi-Tuner heartbeat lost</name>
+                            <priority>HIGH</priority>
+                            <description>No heartbeat received for 5 minutes - the Pi or the tuner service is down.</description>
+                        </trigger>
+                    </triggers>
                 </item>
                 <item>
+                    <uuid>2ce9948fff024f88a051c927199d9061</uuid>
                     <name>Pi-Tuner EAS attention tone</name>
                     <type>TRAP</type>
                     <key>pituner.eas</key>
                     <delay>0</delay>
                     <history>7d</history>
                     <trends>0</trends>
-                    <status>ENABLED</status>
                     <value_type>UNSIGNED</value_type>
                     <description>Set to 1 for ~10 seconds when the EAS/SAME attention tone (853+960 Hz) is heard on a station, then reset to 0. See the pituner.event item for which station.</description>
+                    <triggers>
+                        <trigger>
+                            <uuid>7311559da0ee40358a1f62b32ede31d4</uuid>
+                            <expression>last(/Pi-Tuner/pituner.eas)=1</expression>
+                            <name>Pi-Tuner EAS attention tone heard</name>
+                            <priority>HIGH</priority>
+                            <description>The EAS/SAME attention tone (853+960 Hz) was heard on a monitored station. Auto-recovers when the item drops back to 0.</description>
+                        </trigger>
+                    </triggers>
                 </item>
             </items>
-            <triggers>
-                <trigger>
-                    <expression>{Pi-Tuner:pituner.heartbeat.nodata(5m)}=1</expression>
-                    <name>Pi-Tuner heartbeat lost</name>
-                    <priority>HIGH</priority>
-                    <description>No heartbeat received for 5 minutes - the Pi or the tuner service is down.</description>
-                    <status>ENABLED</status>
-                </trigger>
-                <trigger>
-                    <expression>{Pi-Tuner:pituner.eas.last()}=1</expression>
-                    <name>Pi-Tuner EAS attention tone heard</name>
-                    <priority>HIGH</priority>
-                    <description>The EAS/SAME attention tone (853+960 Hz) was heard on a monitored station. Auto-recovers when the item drops back to 0.</description>
-                    <status>ENABLED</status>
-                </trigger>
-                <trigger>
-                    <expression>find({Pi-Tuner:pituner.status.last()},"down")=1</expression>
-                    <name>Pi-Tuner station down</name>
-                    <priority>HIGH</priority>
-                    <description>At least one station has a pipeline that exited unexpectedly (dongle unplugged, Icecast unreachable, or decode failure).</description>
-                    <status>ENABLED</status>
-                </trigger>
-                <trigger>
-                    <expression>find({Pi-Tuner:pituner.status.last()},"serial_not_found")=1</expression>
-                    <name>Pi-Tuner serial not found</name>
-                    <priority>HIGH</priority>
-                    <description>A configured dongle serial is not present on any connected device.</description>
-                    <status>ENABLED</status>
-                </trigger>
-                <trigger>
-                    <expression>{Pi-Tuner:pituner.stations_active.last()}=0</expression>
-                    <name>Pi-Tuner no stations streaming</name>
-                    <priority>WARNING</priority>
-                    <description>Zero stations are currently streaming.</description>
-                    <status>ENABLED</status>
-                </trigger>
-            </triggers>
         </template>
     </templates>
 </zabbix_export>

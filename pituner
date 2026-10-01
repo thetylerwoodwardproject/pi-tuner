@@ -1,0 +1,36 @@
+#!/bin/sh
+# pituner: command-line helper for Pi-Tuner (installed to /usr/local/bin by install.sh).
+#
+#   pituner config          interactive menu to edit stations, Icecast, Zabbix and email
+#   pituner check           validate the config and print each station's pipeline
+#   pituner upgrade-config  add new settings to your config files (keeps your values)
+#   pituner backup-config   copy your settings to /opt/pituner/backups/
+#   pituner test-email      send a test email using smtp.conf
+#
+# Settings files are owned by the pituner user, so this re-runs itself with sudo.
+DIR="${PITUNER_DIR:-/opt/pituner}"
+
+usage() {
+  sed -n '2,9p' "$0" | sed 's/^# \{0,1\}//'
+  exit 2
+}
+
+[ "$#" -ge 1 ] || usage
+
+if [ "$(id -u)" -ne 0 ]; then
+  exec sudo "$0" "$@"
+fi
+
+cmd="$1"
+shift
+case "$cmd" in
+  config|upgrade-config|backup-config|test-email)
+    exec python3 "$DIR/tuner.py" "$cmd" --dir "$DIR" "$@" ;;
+  check)
+    exec python3 "$DIR/tuner.py" --dir "$DIR" --check "$@" ;;
+  -h|--help|help)
+    usage ;;
+  *)
+    echo "pituner: unknown command '$cmd'" >&2
+    usage ;;
+esac
