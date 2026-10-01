@@ -30,7 +30,7 @@
 </p>
 
 > [!NOTE]
-> **Pi Tuner is a small, hobby-scale project.** The installer **resets your
+> **Pi-Tuner is a small, hobby-scale project.** The installer **resets your
 > Icecast configuration** (it regenerates the source and admin passwords), so
 > back up Icecast first if you already use it for other streams.
 
@@ -135,7 +135,7 @@ Notes:
   installs it for you).
 - Any 8-digit number works. Pick a scheme you can remember, e.g. `00001001`,
   `00001002`, …
-- Pi Tuner matches serials by number, so `1001`, `0001001`, and `00001001` are
+- Pi-Tuner matches serials by number, so `1001`, `0001001`, and `00001001` are
   all treated as the same dongle.
 
 ## Add and edit stations
@@ -198,7 +198,7 @@ you change your Icecast password later.
 
 ## Zabbix alerts (optional)
 
-If you run a Zabbix server internally, Pi Tuner can push station events and a
+If you run a Zabbix server internally, Pi-Tuner can push station events and a
 status heartbeat to it (no agent needed on the Pi).
 
 1. On your Zabbix server, import `zabbix_template.xml`
@@ -233,7 +233,7 @@ constants at the top of `tuner.py` (`EAS_TONE_RATIO`, `EAS_HOLD_SECS`,
 Most US FM stations broadcast **RBDS** (the North American flavor of RDS), a
 tiny data stream hidden in the FM signal. It carries the station's 8-character
 **PS** name (e.g. `KXYZ-FM`) and a **RadioText (RT)** line, which is usually the
-current artist and title. Pi Tuner can decode it and show it as the Icecast
+current artist and title. Pi-Tuner can decode it and show it as the Icecast
 "now playing" text, so your player displays something like:
 
 ```
@@ -275,7 +275,7 @@ Notes:
 - RBDS needs a clean signal. Weak or noisy stations may decode slowly or not at
   all; try adjusting `GAIN` and your antenna.
 - Some stations send only a PS name and no RadioText, or send ads and station
-  slogans in RT instead of song info. Pi Tuner shows whatever the station sends.
+  slogans in RT instead of song info. Pi-Tuner shows whatever the station sends.
 - `redsea` is built from source by the installer. If it isn't installed, a
   station with `RBDS=true` still streams audio normally and a warning is logged;
   RBDS is just skipped.
@@ -344,7 +344,7 @@ sudo ./uninstall.sh --yes    # remove everything without prompting
 <table>
   <tr>
     <td valign="middle">
-      Pi Tuner is made by <b>Tyler Woodward</b>, host of the podcast <a href="https://tylerwoodward.me"><b>The Tyler Woodward Project</b></a>.
+      Pi-Tuner is made by <b>Tyler Woodward</b>, host of the podcast <a href="https://tylerwoodward.me"><b>The Tyler Woodward Project</b></a>.
       <br><br>
       <a href="https://tylerwoodward.me"><img alt="The Tyler Woodward Project" src="https://img.shields.io/badge/podcast-tylerwoodward.me-ff453a?style=flat-square"></a>
       <a href="https://www.facebook.com/thetylerwoodwardproject"><img alt="Facebook" src="https://img.shields.io/badge/Facebook-thetylerwoodwardproject-26272b?style=flat-square&logo=facebook&logoColor=white"></a>
@@ -356,7 +356,7 @@ sudo ./uninstall.sh --yes    # remove everything without prompting
 
 ## Credits
 
-Pi Tuner is built on [rtl-sdr](https://osmocom.org/projects/rtl-sdr/wiki),
+Pi-Tuner is built on [rtl-sdr](https://osmocom.org/projects/rtl-sdr/wiki),
 [FFmpeg](https://ffmpeg.org) and [Icecast](https://icecast.org). Stereo decoding
 uses [stereodemux](https://github.com/windytan/stereodemux) and RBDS decoding
 uses [redsea](https://github.com/windytan/redsea), both by Oona Räsänen
