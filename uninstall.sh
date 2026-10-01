@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Pi Tuner v2 — uninstaller
+# Pi-Tuner — uninstaller
 #
 # Removes the pituner service, application files, the pituner user, and the
 # demux decoder binary. System packages (rtl-sdr, ffmpeg, icecast2) are left in
@@ -54,7 +54,7 @@ if [ "${EUID}" -ne 0 ]; then
 fi
 
 clear 2>/dev/null || true
-echo -e "${BOLD}${RED}Pi Tuner v2 uninstaller${RESET}"
+echo -e "${BOLD}${RED}Pi-Tuner uninstaller${RESET}"
 echo "This removes the service, application files, the 'pituner' user, and the"
 echo "demux decoder. It does not touch system packages or Icecast itself."
 echo ""
