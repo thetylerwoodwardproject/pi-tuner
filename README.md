@@ -71,6 +71,10 @@ systemd keeps running.
     <td>Optional status heartbeat and events, with no agent on the Pi</td>
   </tr>
   <tr>
+    <td>✉️&nbsp;<b>Email&nbsp;alerts</b></td>
+    <td>Optional SMTP emails when a station goes down or recovers, the EAS tone is heard, recording disk space runs low, or the service starts or stops</td>
+  </tr>
+  <tr>
     <td>🧰&nbsp;<b>One-line&nbsp;installer</b></td>
     <td>Installs packages, builds the decoders, configures Icecast and walks you through your first stations</td>
   </tr>
@@ -241,13 +245,62 @@ status heartbeat to it (no agent needed on the Pi).
 Zabbix being unreachable never affects tuning: sends are best-effort and
 logged.
 
+## Email alerts (optional)
+
+Pi-Tuner can email you over SMTP, with or without Zabbix. The installer asks
+about it, or edit `smtp.conf` yourself (it's mode 600 because it holds the
+password), set `ENABLED=true`, and restart the service:
+
+```sh
+sudo nano /opt/pituner/smtp.conf
+sudo python3 /opt/pituner/tuner.py test-email --dir /opt/pituner   # sends one test message
+sudo systemctl restart pituner.service
+```
+
+`test-email` prints the exact SMTP error if it can't send, which makes it the
+quickest way to get your server settings right.
+
+| Key              | Default        | Meaning                                              |
+|------------------|----------------|------------------------------------------------------|
+| `ENABLED`        | `false`        | Turn email alerts on                                 |
+| `HOST`, `PORT`   | —, `587`       | Your SMTP server                                     |
+| `SECURITY`       | `starttls`     | `starttls` (usually port 587), `ssl` (usually 465) or `none` |
+| `VERIFY_TLS`     | `true`         | Set `false` for an internal relay with a self-signed certificate |
+| `USERNAME`, `PASSWORD` | blank    | Login, if the server needs one. Avoid ` #` in the password |
+| `FROM`           | `pituner@<host>` | Sender address                                     |
+| `TO`             | —              | One or more recipients, separated by commas          |
+| `SUBJECT_PREFIX` | `[Pi-Tuner]`   | Start of every subject                               |
+| `ALERT_STATION`, `ALERT_EAS`, `ALERT_DISK`, `ALERT_SERVICE` | `true` | Turn each kind of email on or off |
+| `DOWN_DELAY`     | `120`          | Seconds a station must stay down before the email    |
+| `DISK_MIN_GB`    | `2`            | Free space that triggers the disk-space email        |
+
+What you get (the Pi's host name is added to every subject):
+
+| Email | When |
+|-------|------|
+| `WLSU is DOWN` | A station's stream stopped or its dongle serial wasn't found, and it's still down after `DOWN_DELAY` |
+| `WLSU is back up` | It recovered, with how long it was down. Only sent if the "down" email went out, so a blip that fixes itself sends nothing |
+| `EAS attention tone heard on WLSU` | The 853 + 960 Hz tone was detected |
+| `Low disk space` / `Disk space recovered` | Only when a station records (`RECORD=true`). Free space under `/opt/pituner` dropped below `DISK_MIN_GB`, then rose well above it |
+| `Pi-Tuner started` / `Pi-Tuner stopped` | The service started (with each station's status) or is shutting down |
+
+Notes:
+
+- Sending runs in the background, so a slow or unreachable mail server can never
+  hold up the streams. If delivery fails after three tries it's logged to
+  `email.log`, and the password is never written to any log.
+- Gmail, Microsoft 365 and similar services need an app password (or SMTP AUTH
+  turned on) rather than your normal password.
+- The password sits in `smtp.conf` as plain text, as the Zabbix settings do, so
+  keep that file `chmod 600` and don't commit it anywhere.
+
 ## EAS attention-tone detection (optional)
 
-If Zabbix is enabled, the Pi can listen for the EAS/SAME **attention signal**:
+If Zabbix or [email alerts](#email-alerts-optional) are enabled, the Pi can listen for the EAS/SAME **attention signal**:
 a simultaneous 853 Hz + 960 Hz dual-tone broadcast on FM and NOAA WX before
 emergency messages, and alert you when it's heard.
 
-Set `EAS_DETECT=true` in `zabbix.conf` (the default). When the tone is detected
+Set `EAS_DETECT=true` in `zabbix.conf` (the default) for Zabbix alerts; email alerts only need `ALERT_EAS=true` in `smtp.conf` (also the default). When the tone is detected
 on any FM/WX station, the Pi pushes `pituner.eas = 1` to Zabbix, holds it for
 ~10 seconds, then resets it to `0`, so a trigger on `last()=1` fires and then
 auto-recovers. The station name is logged in `pituner.event`.
@@ -390,6 +443,7 @@ For example:
 | FM genre is just `Radio`         | No PTY heard; check `journalctl -u pituner` for `RBDS PTY:` |
 | No recordings                    | `RECORD=true` set and reloaded? `tail /var/www/pituner/recordings.log`; `df -h` |
 | No `RBDS.log`                    | FM station with both `RBDS=true` and `RECORD=true`? Is `redsea` installed? |
+| No alert emails                  | `sudo python3 /opt/pituner/tuner.py test-email --dir /opt/pituner`; `tail /var/www/pituner/email.log` |
 
 The service automatically restarts any station whose pipeline dies (dongle
 unplugged, Icecast unreachable, decode failure), backing off between attempts.
@@ -405,6 +459,7 @@ The Pi also keeps rotating logs on disk under `/var/www/pituner/`:
 | `zabbix.log` | Mirror of what's sent to Zabbix (events only, not heartbeats)        |
 | `rbds.log`   | RBDS now-playing updates sent to Icecast, and any update failures    |
 | `recordings.log` | Recording problems (disk full, encoder errors)                   |
+| `email.log`  | Email alerts sent, and any delivery failures                         |
 
 They rotate by size (10 MB, keeping 5 compressed copies) via
 `/etc/logrotate.d/pituner`. View them with e.g. `tail -f /var/www/pituner/tuner.log`.
@@ -416,6 +471,7 @@ They rotate by size (10 MB, keeping 5 compressed copies) via
   tuner.py            # the whole app (Python standard library only)
   icecast.conf        # shared Icecast connection
   zabbix.conf         # Zabbix trapper settings (optional)
+  smtp.conf           # SMTP email alerts (optional; holds the password)
   stations/           # one *.conf file per station
   recordings/         # 15-minute MP3 recordings (when RECORD=true)
     fm-example.conf
