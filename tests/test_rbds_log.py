@@ -50,65 +50,71 @@ class LoggerTests(unittest.TestCase):
         logger = logger or tuner.RbdsLogger()
         out = []
         for when, data in events:
-            line = logger.feed(data, when)
-            if line:
-                out.append(line)
+            out += logger.feed(data, when)
+        out += logger.finish(events[-1][0])
         return out
+
+    def bodies(self, events, logger=None):
+        return [l[15:].lstrip(":").strip() for l in self.feed_all(events, logger)]
 
     def test_line_format(self):
         out = self.feed_all([(at(9, 20), {"ps": "WXTB"}),
                              (at(9, 21, 15), rt("Metallica - Enter Sandman"))])
         self.assertEqual(out, ["261001 09:21:15: Metallica - Enter Sandman (WXTB)"])
 
-    def test_no_ps_yet_logs_text_alone(self):
-        self.assertEqual(self.feed_all([(at(9, 0), rt("A - B"))]),
+    def test_no_ps_logs_text_alone(self):
+        self.assertEqual(self.feed_all([(at(9, 0), rt("A - B")), (at(9, 0, 30), rt("A - B"))]),
                          ["261001 09:00:00: A - B"])
 
-    def test_rotating_rt_logs_each_text_once(self):
-        song_a, song_c, slogan = "Artist A - Song A", "Artist C - Song C", "Listen at wxtb.com"
-        seq = [song_a, slogan, song_a, slogan, song_a, slogan,
-               song_c, slogan, song_c, slogan]
-        events = [(at(9, i), rt(t)) for i, t in enumerate(seq)]
-        events.insert(0, (at(8, 59), {"ps": "WXTB"}))
-        out = self.feed_all(events)
-        self.assertEqual([l.split(": ", 1)[1] for l in out],
-                         [f"{song_a} (WXTB)", f"{slogan} (WXTB)", f"{song_c} (WXTB)"])
+    def test_every_change_is_logged_including_rotation(self):
+        seq = ["Song A", "Slogan", "Song A", "Slogan", "Song C", "Slogan"]
+        events = [(at(8, 59), {"ps": "WXTB"})] + [(at(9, i), rt(t)) for i, t in enumerate(seq)]
+        self.assertEqual(self.bodies(events), [f"{t} (WXTB)" for t in seq])
+
+    def test_same_text_minutes_apart_is_logged_once(self):
+        song = "Metallica - Enter Sandman"
+        events = [(at(9, 20), {"ps": "WXTB"}), (at(9, 21, 15), rt(song)),
+                  (at(9, 22, 15), rt(song)), (at(9, 23, 15), rt(song))]
+        self.assertEqual(self.feed_all(events), ["261001 09:21:15: Metallica - Enter Sandman (WXTB)"])
+
+    def test_same_text_returning_after_something_else_is_logged_again(self):
+        song = "Metallica - Enter Sandman"
+        events = [(at(9, 20), {"ps": "WXTB"}), (at(9, 21, 15), rt(song)),
+                  (at(9, 22, 15), rt("98ROCK")), (at(9, 23, 15), rt(song))]
+        self.assertEqual(self.feed_all(events), [
+            "261001 09:21:15: Metallica - Enter Sandman (WXTB)",
+            "261001 09:22:15: 98ROCK (WXTB)",
+            "261001 09:23:15: Metallica - Enter Sandman (WXTB)"])
 
     def test_repeated_rt_messages_are_one_entry(self):
         out = self.feed_all([(at(9, 0, i), rt("A - B")) for i in range(5)])
         self.assertEqual(len(out), 1)
 
-    def test_song_replayed_hours_later_logs_again(self):
-        out = self.feed_all([(at(9, 0), rt("A - B")), (at(9, 5), rt("C - D")),
-                             (at(11, 30), rt("A - B"))])
-        self.assertEqual(len(out), 3)
+    def test_rt_plus_is_ignored(self):
+        events = [(at(9, 0), {"ps": "WXTB"}),
+                  (at(9, 1), plus("Enter Sandman", "Metallica")),
+                  (at(9, 2), rt("Metallica - Enter Sandman")),
+                  (at(9, 3), plus("Bat Country", "Avenged Sevenfold")),
+                  (at(9, 4), {"radiotext": "Metallica - Enter Sandman",
+                              **plus("Other", "Artist")})]
+        # only the plain RT change is logged; RT+ never creates a line
+        self.assertEqual(self.feed_all(events),
+                         ["261001 09:02:00: Metallica - Enter Sandman (WXTB)"])
 
-    def test_rt_plus_logs_artist_title_only_while_running(self):
-        lg = tuner.RbdsLogger()
-        out = self.feed_all([
-            (at(9, 0), {"ps": "WXTB"}),
-            (at(9, 1), plus("Enter Sandman", "Metallica")),
-            (at(9, 2), rt("Listen at wxtb.com")),          # ignored: station has RT+
-            (at(9, 3), plus("Enter Sandman", "Metallica")),
-            (at(9, 4), plus("Bat Country", "Avenged Sevenfold")),
-            (at(9, 5), plus("Some Ad", "Sponsor", running=False)),
-            (at(9, 6), plus("Title Only")),
-        ], lg)
-        self.assertEqual([l.split(": ", 1)[1] for l in out], [
-            "Metallica - Enter Sandman (WXTB)",
-            "Avenged Sevenfold - Bat Country (WXTB)",
-            "Title Only (WXTB)"])
+    def test_blank_or_unusable_rt_plus_changes_nothing(self):
+        empty = {"radiotext_plus": {"item_running": True, "item_toggle": 0, "tags": []}}
+        texts = ["WPR Music", "WPR.org", "WLSU 88.9", "Wisconsin Public Radio"]
+        events = [(at(9, 0), {"ps": "WLSU"})]
+        for i, t in enumerate(texts):
+            events += [(at(9, 0, 1 + i * 12), rt(t)), (at(9, 0, 2 + i * 12), empty)]
+        self.assertEqual(self.bodies(events), [f"{t} (WLSU)" for t in texts])
 
-    def test_seed_from_existing_log_prevents_relog(self):
+    def test_seed_from_existing_log_prevents_relog_of_current(self):
         lg = tuner.RbdsLogger()
-        lg.seed(["261001 09:21:15: Metallica - Enter Sandman (WXTB)",
-                 "garbage line"], at(9, 30))
+        lg.seed(["261001 09:21:15: Metallica - Enter Sandman (WXTB)", "garbage line"], at(9, 30))
         self.assertEqual(self.feed_all([(at(9, 30), {"ps": "WXTB"}),
-                                        (at(9, 30, 5), rt("Metallica - Enter Sandman"))], lg), [])
-        # old entries (outside the gap) are not remembered
-        lg2 = tuner.RbdsLogger()
-        lg2.seed(["261001 06:00:00: Old - Song (WXTB)"], at(9, 30))
-        self.assertEqual(len(self.feed_all([(at(9, 30), rt("Old - Song"))], lg2)), 1)
+                                        (at(9, 30, 5), rt("Metallica - Enter Sandman")),
+                                        (at(9, 30, 30), {"ps": "WXTB"})], lg), [])
 
 
 class RunTests(unittest.TestCase):
@@ -119,16 +125,25 @@ class RunTests(unittest.TestCase):
             d, "/tuner1", io.StringIO("\n".join(json.dumps(x) for x in lines)),
             updater=lambda ice, m, s: sent.append(s) or True,
             log_name=log_name,
-            clock=(lambda: next(clock_times)) if clock_times else (lambda: at(9, 21, 15)))
+            clock=(lambda: next(clock_times)) if clock_times else self.ticking())
         return sent
+
+    def ticking(self, start=at(9, 21, 15), step=8):
+        t = [start - step]
+
+        def clock():
+            t[0] += step
+            return t[0]
+        return clock
 
     def test_writes_log_and_updates_icecast(self):
         with tempfile.TemporaryDirectory() as d:
-            sent = self.run_helper(d, [{"ps": "WXTB"}, rt("Metallica - Enter Sandman")])
+            sent = self.run_helper(d, [{"ps": "WXTB"}, rt("Metallica - Enter Sandman"),
+                                       {"ps": "WXTB"}, {"ps": "WXTB"}])
             path = os.path.join(d, "recordings", "WXTB", "2026", "10", "01", "RBDS.log")
             with open(path) as f:
-                self.assertEqual(f.read(),
-                                 "261001 09:21:15: Metallica - Enter Sandman (WXTB)\n")
+                content = f.read()
+            self.assertRegex(content, r"^261001 09:21:\d\d: Metallica - Enter Sandman \(WXTB\)\n$")
             self.assertEqual(sent[-1], "Metallica - Enter Sandman (WXTB)")
 
     def test_no_log_without_log_name(self):
@@ -146,8 +161,9 @@ class RunTests(unittest.TestCase):
 
     def test_midnight_rolls_to_next_day_folder(self):
         with tempfile.TemporaryDirectory() as d:
-            # first call seeds at startup, then one call per event
-            times = [at(23, 59, 50), at(23, 59, 50), at(23, 59, 55), at(0, 0, 5, day=2)]
+            # two startup calls (seed + initial), then one call per event
+            times = [at(23, 59, 50), at(23, 59, 50), at(23, 59, 50), at(23, 59, 55),
+                     at(0, 0, 5, day=2)]
             self.run_helper(d, [{"ps": "WXTB"}, rt("A - B"), rt("C - D")], times=times)
             base = os.path.join(d, "recordings", "WXTB", "2026", "10")
             self.assertTrue(os.path.exists(os.path.join(base, "01", "RBDS.log")))
@@ -156,7 +172,8 @@ class RunTests(unittest.TestCase):
     def test_unwritable_folder_never_breaks_icecast_updates(self):
         with tempfile.TemporaryDirectory() as d:
             open(os.path.join(d, "recordings"), "w").close()  # a file, not a folder
-            sent = self.run_helper(d, [{"ps": "WXTB"}, rt("A - B")])
+            sent = self.run_helper(d, [{"ps": "WXTB"}, rt("A - B"), {"ps": "WXTB"},
+                                       {"ps": "WXTB"}])
             self.assertEqual(sent[-1], "A - B (WXTB)")
 
 
@@ -186,3 +203,54 @@ class PruneTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class DynamicPsTests(unittest.TestCase):
+    """Z93-style station: PS scrolls 'Station', 'Z93 The', '#1 Hit', 'Music'."""
+
+    def scroll(self, start, seconds, callsign=None):
+        events, frags, t = [], ["Station", "Z93 The", "#1 Hit", "Music"], 0
+        while t < seconds:
+            d = {"ps": frags[(t // 3) % 4]}
+            if callsign:
+                d["callsign"] = callsign
+            events.append((start + t, d))
+            t += 3
+        return events
+
+    def run_logger(self, events):
+        lg = tuner.RbdsLogger()
+        out = []
+        for when, data in events:
+            out += lg.feed(data, when)
+        out += lg.finish(events[-1][0])
+        return [l.split(": ", 1)[1] for l in out]
+
+    def test_scrolling_ps_uses_callsign_not_fragments(self):
+        events = self.scroll(at(9, 0), 30, callsign="WZEE")
+        events.insert(3, (at(9, 0, 7), rt("Z93 The #1 Hit Music Station")))
+        self.assertEqual(self.run_logger(events), ["Z93 The #1 Hit Music Station (WZEE)"])
+
+    def test_scrolling_ps_without_callsign_has_no_suffix(self):
+        events = self.scroll(at(9, 0), 30)
+        events.insert(3, (at(9, 0, 7), rt("Z93 The #1 Hit Music Station")))
+        self.assertEqual(self.run_logger(events), ["Z93 The #1 Hit Music Station"])
+
+    def test_static_ps_still_used_and_log_time_is_rt_arrival(self):
+        lg = tuner.RbdsLogger()
+        out = []
+        out += lg.feed({"ps": "WXTB"}, at(9, 0, 0))
+        out += lg.feed(rt("A - B"), at(9, 0, 1))      # PS not settled yet: held back
+        self.assertEqual(out, [])
+        out += lg.feed({"ps": "WXTB"}, at(9, 0, 20))  # settled: flushed with arrival time
+        self.assertEqual(out, ["261001 09:00:01: A - B (WXTB)"])
+
+    def test_icecast_label_matches(self):
+        t = tuner.PsTracker()
+        for when, data in self.scroll(at(9, 0), 30, callsign="WZEE"):
+            t.update(data, when)
+        self.assertEqual(t.label(at(9, 0, 30)), (True, "WZEE"))
+        s = tuner.PsTracker()
+        s.update({"ps": "WLSU"}, at(9, 0))
+        self.assertEqual(s.label(at(9, 0, 1)), (False, ""))
+        self.assertEqual(s.label(at(9, 0, 30)), (True, "WLSU"))

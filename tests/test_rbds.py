@@ -116,11 +116,16 @@ class SongTests(unittest.TestCase):
             '{"radiotext": "Next - Song"}',
         ])
         sent = []
+        t = [0.0]
+
+        def clock():  # 5 s per line, so the PS label has settled by line 3
+            t[0] += 5.0
+            return t[0]
         with tempfile.TemporaryDirectory() as d:
             tuner.run_rbds_meta(d, "/tuner1", io.StringIO(lines),
-                                lambda ice, m, s: sent.append((m, s)) or True)
+                                lambda ice, m, s: sent.append((m, s)) or True,
+                                clock=clock)
         self.assertEqual(sent, [
-            ("/tuner1", "KXYZ"),
             ("/tuner1", "Artist - Title (KXYZ)"),
             ("/tuner1", "Next - Song (KXYZ)"),
         ])

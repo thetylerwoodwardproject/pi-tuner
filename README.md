@@ -289,6 +289,12 @@ rtl_fm ──┬──▶ demux ──▶ ffmpeg ──▶ Icecast  (audio)
 - `tuner.py rbds-meta` combines the latest RT and PS into `RT (PS)` and updates
   the stream's metadata on its mount (`/tuner1`, `/tuner2`, …). If a station
   sends only RT or only PS, that one is shown by itself. Only changes are sent.
+- The `(PS)` after the text is the station's PS name. Some stations scroll their
+  PS ("Station", "Z93 The", "#1 Hit", "Music"), which isn't a name. When Pi-Tuner
+  sees the PS change several times in a minute, it shows the callsign worked out
+  from the station's PI code instead (or nothing if there isn't one), so the
+  now-playing text doesn't flip every few seconds. The first update after a
+  start waits about 12 seconds while it tells the two apart.
 - The Icecast stream **name** is not changed: it stays the `NAME` from the
   station file. (Icecast only sets the name when a source connects.)
 - Updates use the `source` login and `SOURCE_PASSWORD` from `icecast.conf`. To use
@@ -351,18 +357,21 @@ For example:
   /opt/pituner/recordings/STATION_NAME/YYYY/MM/DD/RBDS.log
   ```
 
+  Every RadioText change is logged, in the Pi's local time, with a new file each
+  day, one line per change:
+
   ```
   261001 09:21:15: Metallica - Enter Sandman (WXTB)
   261001 09:23:16: Avenged Sevenfold - Bat Country (WXTB)
   ```
 
-  Each line is `YYMMDD HH:MM:SS: text (PS)`, in the Pi's local time, appended
-  as the text changes. A new file starts every day. WX stations don't have one.
-  Many stations rotate their RadioText between the song and slogans or phone
-  numbers, so each text is logged once and not again until it has been gone for
-  an hour. If a station sends RadioText Plus (tagged artist and title), the log
-  uses that instead, which leaves slogans and ads out entirely. A slogan can
-  still be logged once the first time it appears after a start or restart.
+  - A repeat of the text that's already showing is not logged again, but a text
+    coming back after something else (a station rotating song and slogan) is.
+  - Only plain RadioText is logged. RadioText Plus (the tagged artist and title
+    fields) is ignored.
+  - `(WXTB)` is the station's PS name. If a station scrolls its PS, the callsign
+    worked out from its PI code is shown instead, or nothing.
+  - WX stations don't have an `RBDS.log`.
 - **Plan for disk space.** Each station uses about 1.4 GB a day (58 MB an hour).
   Set `RECORD_KEEP_DAYS=14` in the station file to delete files (and `RBDS.log`s)
   older than 14 days, plus any empty date folders. Pi-Tuner checks hourly. Leave it out to
