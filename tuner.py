@@ -36,6 +36,10 @@ Usage:
     tuner.py test-email --dir /opt/pituner [--to ADDRESS]
              send one test message using smtp.conf and report any SMTP error.
 
+    tuner.py deviation --dir /opt/pituner --tuner ID --full-khz N <name> <rate>
+             send peak deviation (kHz) and modulation (%) of rtl_fm's output
+             on stdin to Zabbix.
+
     tuner.py level --dir /opt/pituner --tuner ID <name> <rate> <channels>
              send the audio level (dBFS) of raw s16le PCM from stdin to Zabbix.
 
@@ -47,6 +51,7 @@ Usage:
 import argparse
 import array
 import base64
+import collections
 import datetime
 import email.message
 import email.utils
@@ -256,6 +261,9 @@ CONFIG_KEYS = {
         ("INTERVAL", "60", True, "status snapshot / heartbeat interval, seconds", None),
         ("EAS_DETECT", "false", True, "true to detect the EAS attention tone", None),
         ("LEVEL_MONITOR", "true", True, "send each tuner's audio level (dBFS) to Zabbix", None),
+        ("DEVIATION_MONITOR", "true", True, "send each tuner's peak deviation (kHz) and modulation (%)", None),
+        ("FM_FULL_DEVIATION_KHZ", "75", True, "deviation counted as 100% modulation on FM", None),
+        ("WX_FULL_DEVIATION_KHZ", "5", True, "deviation counted as 100% modulation on WX", None),
     ],
     "smtp.conf": [
         ("ENABLED", "false", True, "true to send email alerts", None),
@@ -439,6 +447,14 @@ def _eas_tee(name, sample_rate, channels, eas_dir, tid=""):
             f'--dir "{eas_dir}"{tuner_arg} "{name}" {sample_rate} {channels})')
 
 
+def _dev_tee(name, sample_rate, base_dir, tid, full_khz):
+    """Return the pipeline fragment that taps rtl_fm's demodulated output to the
+    deviation meter (mono s16)."""
+    return (f"tee --output-error=warn >(python3 {TUNER_PATH} deviation "
+            f'--dir "{base_dir}" --tuner {tid} --full-khz {full_khz:g} '
+            f'"{name}" {sample_rate})')
+
+
 def _level_tee(name, sample_rate, channels, base_dir, tid):
     """Return the pipeline fragment that taps audio to the level meter."""
     return (f"tee --output-error=warn >(python3 {TUNER_PATH} level "
@@ -574,13 +590,16 @@ def _genre_for(cfg, genre=""):
 
 
 def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
-                  rbds=False, genre="", record=True, level=False):
+                  rbds=False, genre="", record=True, level=False,
+                  deviation=False, dev_full_khz=None):
     """Assemble the shell pipeline for one station.
 
     ``genre`` is the Icecast genre for FM (the RBDS PTY found at startup);
     FM falls back to "Radio" when there is none. WX is always "Weather".
     The recorder tap is added when ``record`` and the station's RECORD are set;
-    the level-meter tap when ``level`` (Zabbix audio level) is.
+    the level-meter tap when ``level`` (Zabbix audio level) is; the deviation
+    meter taps rtl_fm's output when ``deviation`` is, measured against
+    ``dev_full_khz`` (the deviation counted as 100%).
     """
     tid = tuner_id(cfg["mount"])
     record = record and bool(cfg.get("record"))
@@ -596,6 +615,8 @@ def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
 
     if cfg["band"] == "wx":
         cmd = f"rtl_fm -d {device_index} -f {freq_hz} -s 25000 -E deemp -F 9"
+        if deviation:
+            cmd += f" | {_dev_tee(name, 25000, eas_dir, tid, dev_full_khz or 5.0)}"
         if record:
             cmd += f" | {_record_tee(name, 25000, 1, eas_dir)}"
         if level:
@@ -605,6 +626,8 @@ def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
         return cmd + f" | ffmpeg -f s16le -ar 25000 -ac 1 -i pipe:0 {ffmpeg}"
 
     cmd = _fm_source(cfg, device_index)
+    if deviation:
+        cmd += f" | {_dev_tee(name, 192000, eas_dir, tid, dev_full_khz or 75.0)}"
     if rbds and cfg.get("rbds"):
         log_name = name if record else None
         cmd += f" | {_rbds_tee(cfg['mount'], eas_dir, log_name)}"
@@ -654,6 +677,8 @@ TUNER_METRICS = {
     "rbds.ps": ("char", "Current RBDS station name (PS), or the callsign for a scrolling PS"),
     "eas": ("uint", "1 for about 10 seconds when the EAS attention tone is heard"),
     "level": ("float", "Audio level in dBFS (RMS), averaged over 10 seconds"),
+    "deviation": ("float", "Peak carrier deviation in kHz over 10 seconds (indicative)"),
+    "modulation": ("float", "Peak deviation as a percent of 100% modulation (FM 75 kHz, WX 5 kHz)"),
 }
 LEVEL_INTERVAL_SECS = 10
 
@@ -707,6 +732,9 @@ class ZabbixSender:
             self.interval = 60
         self.interval = max(10, self.interval)
         self.level_monitor = _conf_flag(conf, "level_monitor", True)
+        self.deviation_monitor = _conf_flag(conf, "deviation_monitor", True)
+        self.fm_full_khz = max(1.0, _conf_number(conf, "fm_full_deviation_khz", 75.0, float))
+        self.wx_full_khz = max(0.5, _conf_number(conf, "wx_full_deviation_khz", 5.0, float))
         self._lock = threading.Lock()
         self._queue = queue.Queue(maxsize=200)
         self._worker = None
@@ -1101,6 +1129,74 @@ def run_level_meter(base_dir, tid, name, sample_rate, channels, stream=None,
         if seen >= window:
             zbx.send_async([(key, dbfs_from_sumsq(sumsq, count))])
             sumsq = count = seen = 0
+    zbx.flush(5.0)
+
+
+# ------------------------------------------------------ deviation / modulation
+
+DEVIATION_BLOCK_SECS = 0.1
+RTL_FM_COUNTS_PER_PI = 1 << 14     # rtl_fm scales the phase step so pi radians = 2**14
+
+
+def khz_per_count(rate):
+    """Carrier deviation in kHz for one rtl_fm demodulator count at ``rate`` Hz.
+
+    rtl_fm outputs (phase step / pi) * 2**14 per sample, so a deviation of f Hz
+    is 2 * f / rate * 2**14 counts."""
+    return rate / (2.0 * RTL_FM_COUNTS_PER_PI) / 1000.0
+
+
+def window_peak(block_peaks):
+    """Largest block peak, ignoring a lone noise click: if the top block is more
+    than 1.5x the next one it is dropped."""
+    if not block_peaks:
+        return 0.0
+    top = sorted(block_peaks, reverse=True)
+    if len(top) >= 2 and top[0] > 1.5 * top[1]:
+        return top[1]
+    return top[0]
+
+
+def run_deviation_meter(base_dir, tid, name, rate, full_khz, stream=None,
+                        interval=LEVEL_INTERVAL_SECS, zbx=None):
+    """Read rtl_fm's demodulated s16 output from stdin and send peak deviation
+    (kHz) and modulation (% of ``full_khz``) to Zabbix every ``interval`` seconds.
+
+    The carrier-frequency offset of the dongle shows up as a constant, so the
+    median of the last couple of seconds of block means is removed before taking
+    each block's peak. Sends go
+    through the background queue so a slow Zabbix server can't stall the audio
+    pipeline this taps. Exits cleanly on stdin EOF.
+    """
+    stream = stream if stream is not None else sys.stdin.buffer
+    zbx = zbx or ZabbixSender(parse_keyvalue(os.path.join(base_dir, "zabbix.conf")))
+    dev_key = zbx.tuner_key("deviation", tid)
+    mod_key = zbx.tuner_key("modulation", tid)
+    scale = khz_per_count(rate)
+    chunk = max(2, int(rate * DEVIATION_BLOCK_SECS)) * 2
+    per_window = max(1, int(round(interval / DEVIATION_BLOCK_SECS)))
+    recent_means = collections.deque(maxlen=21)   # about 2 s of block means
+    peaks = []
+    while True:
+        raw = stream.read(chunk)
+        if not raw:
+            break
+        raw = raw[: len(raw) // 2 * 2]
+        samples = array.array("h")
+        samples.frombytes(raw)
+        if sys.byteorder == "big":
+            samples.byteswap()
+        if not samples:
+            continue
+        recent_means.append(sum(samples) / len(samples))
+        # the median ignores a one-off burst that would drag a plain average
+        dc = sorted(recent_means)[len(recent_means) // 2]
+        peaks.append(max(max(samples) - dc, dc - min(samples)))
+        if len(peaks) >= per_window:
+            khz = window_peak(peaks) * scale
+            zbx.send_async([(dev_key, round(khz, 2)),
+                            (mod_key, round(khz / full_khz * 100.0, 1))])
+            peaks = []
     zbx.flush(5.0)
 
 
@@ -1700,6 +1796,7 @@ class Tuner:
         self.alerts = AlertManager(self.mailer)
         self.eas_enabled = False
         self.level_enabled = False
+        self.deviation_enabled = False
         self.stations = []
         self.devices = []
         self._last_scan = 0.0
@@ -1726,6 +1823,7 @@ class Tuner:
         eas_by_email = self.mailer.enabled and self.mailer.alert_eas
         self.eas_enabled = (eas_on and self.zbx.enabled) or eas_by_email
         self.level_enabled = self.zbx.enabled and self.zbx.level_monitor
+        self.deviation_enabled = self.zbx.enabled and self.zbx.deviation_monitor
         self.stations = [Station(c) for c in
                          load_stations(os.path.join(self.dir, "stations"))]
         self.alerts.sync_stations({st.name for st in self.stations})
@@ -1788,7 +1886,10 @@ class Tuner:
         st.genre = _genre_for(st.cfg, genre)
         cmd = build_command(st.cfg, self.ice, index,
                             eas=self.eas_enabled, eas_dir=self.dir, rbds=rbds,
-                            genre=genre, level=self.level_enabled)
+                            genre=genre, level=self.level_enabled,
+                            deviation=self.deviation_enabled,
+                            dev_full_khz=(self.zbx.wx_full_khz if st.cfg["band"] == "wx"
+                                          else self.zbx.fm_full_khz))
         try:
             st.proc = subprocess.Popen(
                 cmd, shell=True, stdout=subprocess.DEVNULL,
@@ -2013,6 +2114,19 @@ def _main_level(argv):
     return 0
 
 
+def _main_deviation(argv):
+    parser = argparse.ArgumentParser(prog="tuner.py deviation")
+    parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
+    parser.add_argument("--tuner", required=True, help="tuner id, e.g. tuner1")
+    parser.add_argument("--full-khz", type=float, required=True,
+                        help="deviation counted as 100%% modulation, in kHz")
+    parser.add_argument("name", help="station name")
+    parser.add_argument("rate", type=int, help="rtl_fm output rate in Hz")
+    args = parser.parse_args(argv)
+    run_deviation_meter(args.dir, args.tuner, args.name, args.rate, args.full_khz)
+    return 0
+
+
 def _main_config(argv):
     parser = argparse.ArgumentParser(prog="tuner.py config")
     parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
@@ -2078,6 +2192,8 @@ def main(argv=None):
         argv = sys.argv[1:]
     if argv and argv[0] == "detect-eas":
         return _main_detect_eas(argv[1:])
+    if argv and argv[0] == "deviation":
+        return _main_deviation(argv[1:])
     if argv and argv[0] == "level":
         return _main_level(argv[1:])
     if argv and argv[0] == "upgrade-config":

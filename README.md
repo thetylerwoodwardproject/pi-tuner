@@ -355,6 +355,7 @@ changes.
 | `rbds.rt`, `rbds.ps` | the current RBDS RadioText and station name (PS) |
 | `eas` | 1 for about 10 seconds when the EAS attention tone is heard |
 | `level` | audio level in dBFS, one value every 10 seconds |
+| `deviation`, `modulation` | peak carrier deviation in kHz and as a percent of 100% modulation, one reading every 10 seconds (see below) |
 | `restarts` | how many times the tuner's pipeline has restarted since the service started |
 | `recording`, `recording.age` | whether it records, and seconds since its newest recording file was written |
 
@@ -364,10 +365,34 @@ the heartbeat, and an "EAS on any tuner" pulse.
 **Triggers.** Per tuner: *is down* (not streaming for 2 minutes), *serial not
 found*, *EAS attention tone heard*, *restarting repeatedly* (3 or more restarts
 in 15 minutes), *dead air* (level below the threshold while streaming) and
-*recording stalled*. Host-wide: *heartbeat lost* and *no stations streaming*.
-Tune them with template macros on the host: `{$PITUNER.SILENCE.DB}` (default
-`-60`), `{$PITUNER.SILENCE.TIME}` (`1m`) and `{$PITUNER.REC.STALE}` (`300`
-seconds).
+*recording stalled* and *overmodulation* (modulation above the limit in at
+least 3 of the last 5 minutes of readings). Host-wide: *heartbeat lost* and *no
+stations streaming*. Tune them with template macros on the host:
+`{$PITUNER.SILENCE.DB}` (default `-60`), `{$PITUNER.SILENCE.TIME}` (`1m`),
+`{$PITUNER.REC.STALE}` (`300` seconds) and `{$PITUNER.OVERMOD.PCT}` (`105`).
+
+**Deviation and modulation.** Pi-Tuner measures how far each station's carrier
+swings (its deviation), straight from the radio's demodulated signal, and
+reports the highest peak every 10 seconds in kHz and as a percent of 100%
+modulation:
+
+| | 100% modulation | Notes |
+|---|---|---|
+| FM broadcast | 75 kHz | Measured on the whole composite signal, so it includes the stereo pilot and RBDS, like a modulation monitor. |
+| NOAA Weather Radio (WX) | about 5 kHz | Narrowband FM. WX is measured after the radio's de-emphasis, so high-pitched peaks read a little low. |
+
+Both references can be changed with `FM_FULL_DEVIATION_KHZ` and
+`WX_FULL_DEVIATION_KHZ` in `zabbix.conf`, and `DEVIATION_MONITOR=false` turns the
+measurement off. The overmodulation trigger fires at 105% by default, because
+well-processed audio normally peaks right at 100% and the reading has some
+tolerance.
+
+How accurate is it? The conversion to kHz is exact, but the reading is only as
+good as the signal. A strong, clean signal reads closely; a weak or noisy one can
+show false peaks (one-off clicks are ignored, sustained ones are not), and
+the dongle's frequency error is removed automatically. Treat it as a handy
+indicator and trend, not a calibrated modulation monitor: don't use it for
+compliance reporting, and compare against your station's own monitor if you can.
 
 **How it fills in.** Every `INTERVAL` seconds (default 60) Pi-Tuner sends the
 list of tuners and their values. Zabbix creates the items when it first sees

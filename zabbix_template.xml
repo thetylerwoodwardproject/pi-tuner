@@ -300,6 +300,39 @@
                             <units>dBFS</units>
                             <description>Audio level in dBFS (RMS), averaged over 10 seconds</description>
                         </item_prototype>
+                        <item_prototype>
+                            <uuid>44f45af053ce447da8e1379271ccc55d</uuid>
+                            <name>{#NAME}: peak deviation</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.deviation[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>31d</history>
+                            <trends>365d</trends>
+                            <value_type>FLOAT</value_type>
+                            <units>kHz</units>
+                            <description>Peak carrier deviation in kHz over 10 seconds (indicative; measured from the RTL-SDR's demodulated signal)</description>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>0eda9b55bdae455db05b22794e813e7c</uuid>
+                            <name>{#NAME}: modulation</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.modulation[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>31d</history>
+                            <trends>365d</trends>
+                            <value_type>FLOAT</value_type>
+                            <units>%</units>
+                            <description>Peak deviation as a percent of 100% modulation (FM 75 kHz, WX 5 kHz)</description>
+                            <trigger_prototypes>
+                                <trigger_prototype>
+                                    <uuid>5a0e176ebc1a470d91d5b4d217bd3426</uuid>
+                                    <expression>count(/Pi-Tuner/pituner.tuner.modulation[{#TUNER}],5m,"gt",{$PITUNER.OVERMOD.PCT})&gt;=3</expression>
+                                    <name>Overmodulation on {#NAME}</name>
+                                    <priority>WARNING</priority>
+                                    <description>Measured modulation went above {$PITUNER.OVERMOD.PCT}% in at least 3 of the last 5 minutes of readings. The reading is indicative; confirm with a calibrated modulation monitor.</description>
+                                </trigger_prototype>
+                            </trigger_prototypes>
+                        </item_prototype>
                     </item_prototypes>
                     <trigger_prototypes>
                         <trigger_prototype>
@@ -334,6 +367,11 @@
                     <macro>{$PITUNER.REC.STALE}</macro>
                     <value>300</value>
                     <description>Seconds without a new recording file before a recording tuner is flagged.</description>
+                </macro>
+                <macro>
+                    <macro>{$PITUNER.OVERMOD.PCT}</macro>
+                    <value>105</value>
+                    <description>Modulation (% of 100%) above which a reading counts toward the overmodulation trigger.</description>
                 </macro>
             </macros>
             <valuemaps>

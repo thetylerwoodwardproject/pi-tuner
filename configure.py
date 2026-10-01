@@ -42,6 +42,13 @@ def valid_interval(value):
     return value.isdigit() and int(value) >= 10
 
 
+def valid_pos_number(value):
+    try:
+        return float(value) > 0
+    except ValueError:
+        return False
+
+
 def valid_float(value):
     try:
         return float(value) >= 0
@@ -69,6 +76,11 @@ ZABBIX_FIELDS = [
     ("INTERVAL", "Heartbeat interval, seconds", "text", valid_interval, "Enter a number, 10 or more."),
     ("EAS_DETECT", "Detect the EAS attention tone", "bool", None, ""),
     ("LEVEL_MONITOR", "Send each tuner's audio level (for dead-air alerts)", "bool", None, ""),
+    ("DEVIATION_MONITOR", "Send each tuner's peak deviation and modulation %", "bool", None, ""),
+    ("FM_FULL_DEVIATION_KHZ", "FM deviation counted as 100% modulation, kHz", "text", valid_pos_number,
+     "Enter a number above 0."),
+    ("WX_FULL_DEVIATION_KHZ", "WX deviation counted as 100% modulation, kHz", "text", valid_pos_number,
+     "Enter a number above 0."),
 ]
 EMAIL_FIELDS = [
     ("ENABLED", "Send email alerts", "bool", None, ""),

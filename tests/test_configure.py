@@ -72,7 +72,7 @@ class QuitTests(MenuCase):
     def test_pressing_enter_through_every_prompt_changes_nothing(self):
         before = self.snapshot()
         # Icecast (5 prompts; secrets use getpass), Zabbix (6), then quit
-        m, _ = self.menu(["2"] + [""] * 3 + ["3"] + [""] * 7 + ["q"], secrets=["", ""])
+        m, _ = self.menu(["2"] + [""] * 3 + ["3"] + [""] * 10 + ["q"], secrets=["", ""])
         m.run()
         self.assertEqual(self.snapshot(), before)
         self.assertEqual(self.reloads, [])
@@ -170,12 +170,14 @@ class StationTests(MenuCase):
 
 class SectionTests(MenuCase):
     def test_zabbix_edit(self):
-        # ENABLED?, SERVER, PORT, HOSTNAME, INTERVAL, EAS_DETECT?, LEVEL_MONITOR?
-        m, _ = self.menu(["3", "n", "zbx2.internal", "", "", "30", "y", "", "q", "n"])
+        # ENABLED?, SERVER, PORT, HOSTNAME, INTERVAL, EAS_DETECT?, LEVEL_MONITOR?,
+        # DEVIATION_MONITOR?, FM full deviation, WX full deviation
+        m, _ = self.menu(["3", "n", "zbx2.internal", "", "", "30", "y", "", "", "62.5", "", "q", "n"])
         m.run()
         conf = tuner.parse_keyvalue(os.path.join(self.d, "zabbix.conf"))
-        self.assertEqual((conf["enabled"], conf["server"], conf["interval"], conf["eas_detect"]),
-                         ("false", "zbx2.internal", "30", "true"))
+        self.assertEqual((conf["enabled"], conf["server"], conf["interval"], conf["eas_detect"],
+                          conf["fm_full_deviation_khz"]),
+                         ("false", "zbx2.internal", "30", "true", "62.5"))
         self.assertIn("PORT=10051", read(os.path.join(self.d, "zabbix.conf")))
 
     def test_icecast_password_is_hidden_and_kept_on_enter(self):
@@ -221,12 +223,12 @@ class SectionTests(MenuCase):
 
 class ApplyTests(MenuCase):
     def test_changes_offer_a_reload_and_run_it(self):
-        m, _ = self.menu(["3", "n", "", "", "", "", "", "", "q", "y"])
+        m, _ = self.menu(["3", "n"] + [""] * 9 + ["q", "y"])
         m.run()
         self.assertEqual(self.reloads, [["systemctl", "reload", "pituner.service"]])
 
     def test_backup_is_made_once_before_the_first_write(self):
-        m, _ = self.menu(["3", "n", "", "", "", "", "", "", "3", "n", "", "", "", "", "", "", "q", "n"])
+        m, _ = self.menu(["3", "n"] + [""] * 9 + ["3", "n"] + [""] * 9 + ["q", "n"])
         m.run()
         backups = os.listdir(os.path.join(self.d, "backups"))
         self.assertEqual(len(backups), 1)
