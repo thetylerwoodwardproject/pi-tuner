@@ -146,15 +146,16 @@ sudo ./install.sh
 ## Security
 
 > [!IMPORTANT]
-> **Run Pi-Tuner as its own user.** This is strongly encouraged. It takes audio
-> from a radio, talks to your network, and holds passwords, so it shouldn't share
-> an account with anything else.
+> **We strongly recommend running Pi-Tuner under its own, separate user account
+> on your Pi** rather than your everyday login. It takes audio from a radio,
+> talks to your network, and holds passwords, so it shouldn't share an account
+> with anything else. These are recommendations, not something the installer
+> enforces.
 
-- The installer creates a dedicated `pituner` system user (no password, no home
-  folder, not in sudoers) and the service runs as it, never as root. Keep it
-  that way: don't run `tuner.py` as root or from your everyday login.
-- Use a separate admin account on the Pi instead of the default `pi` user, and
-  change any default password before the Pi goes on a network.
+- Don't run it from your everyday account, as root, or from the default `pi`
+  user. (For reference, the installed service already runs as its own
+  unprivileged `pituner` user.)
+- Change any default password before the Pi goes on a network.
 - Ideally give Pi-Tuner a Pi of its own, and keep it off networks you don't
   trust. Keep Icecast's admin page, SSH and Zabbix reachable only from your
   internal network, or put a firewall or network segmentation in front of them.
