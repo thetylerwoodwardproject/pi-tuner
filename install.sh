@@ -601,6 +601,9 @@ KEY_EAS=pituner.eas
 INTERVAL=60
 EAS_DETECT=true
 LEVEL_MONITOR=true
+DEVIATION_MONITOR=true
+FM_FULL_DEVIATION_KHZ=75
+WX_FULL_DEVIATION_KHZ=5
 # ─── end user settings ─────────────────────────────
 EOF
   chown pituner:pituner "${APP_DIR}/zabbix.conf"
@@ -623,6 +626,9 @@ KEY_EAS=pituner.eas
 INTERVAL=60
 EAS_DETECT=true
 LEVEL_MONITOR=true
+DEVIATION_MONITOR=true
+FM_FULL_DEVIATION_KHZ=75
+WX_FULL_DEVIATION_KHZ=5
 # ─── end user settings ─────────────────────────────
 EOF
   chown pituner:pituner "${APP_DIR}/zabbix.conf"
