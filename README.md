@@ -22,6 +22,7 @@
   <a href="#what-it-does">What it does</a> ·
   <a href="#how-it-works">How it works</a> ·
   <a href="#install-one-line">Install</a> ·
+  <a href="#security">Security</a> ·
   <a href="#add-and-edit-stations">Stations</a> ·
   <a href="#rbds-now-playing-optional">RBDS</a> ·
   <a href="#configuration-reference">Config</a> ·
@@ -141,6 +142,54 @@ git clone https://github.com/thetylerwoodwardproject/pi-tuner.git
 cd pi-tuner
 sudo ./install.sh
 ```
+
+## Security
+
+> [!IMPORTANT]
+> **We strongly recommend running Pi-Tuner under its own, separate user account
+> on your Pi** rather than your everyday login. It takes audio from a radio,
+> talks to your network, and holds passwords, so it shouldn't share an account
+> with anything else. These are recommendations, not something the installer
+> enforces.
+
+- Don't run it from your everyday account, as root, or from the default `pi`
+  user. Use a dedicated, unprivileged account, named whatever you like.
+- Change any default password before the Pi goes on a network.
+- Ideally give Pi-Tuner a Pi of its own, and keep it off networks you don't
+  trust. Keep Icecast's admin page, SSH and Zabbix reachable only from your
+  internal network, or put a firewall or network segmentation in front of them.
+- Keep the Pi's software updated (`sudo apt update && sudo apt full-upgrade`).
+
+**Using Pi-Tuner in a broadcast environment? Follow the FCC password
+guidelines.** The FCC's cybersecurity rules for broadcast equipment cover
+internet-connected devices in the signal chain. In short, as the broadcasters'
+associations summarize them ([SBE summary](https://sbe36.org/2025/12/fcc-urges-broadcasters-to-follow-cybersecurity-best-practices/)):
+
+- passwords of **at least 15 characters**, with no dictionary words;
+- **never reuse** a password on another account, device or service;
+- **change default passwords** before the device is used on air;
+- **change a password** if you think it has been compromised;
+- install security patches and upgrades promptly, and limit remote access with a
+  firewall or network segmentation.
+
+Check the current FCC rules for the exact requirements; this README isn't legal
+advice.
+
+Where the passwords are in Pi-Tuner, so you know what to harden:
+
+| Password | Notes |
+|----------|-------|
+| The Pi's own login, and SSH | Yours to set. Prefer SSH keys, and turn off password logins if you can. |
+| Icecast source and admin | The installer generates 32 random characters for each, which already meets the length rule. Keep them, and don't reuse them elsewhere. |
+| Email (`smtp.conf`) | Use a long, unique password, or an app password from your mail provider. |
+| Zabbix | Pi-Tuner holds no Zabbix password, but protect your Zabbix server the same way. |
+
+`icecast.conf` and `smtp.conf` are plain-text files that only the account
+running Pi-Tuner and root can read (mode 600), and `sudo pituner config` hides
+passwords as you type them.
+
+Not running this on air? Then these are suggestions, not requirements: do what
+you do.
 
 ## Give each dongle a unique serial number
 
