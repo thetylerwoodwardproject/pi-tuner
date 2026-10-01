@@ -59,7 +59,6 @@ REC_RETRY_SECS = 30
 REC_PRUNE_SECS = 3600
 RBDS_LOG_FILE = "RBDS.log"
 RBDS_PS_SETTLE_SECS = 12
-RBDS_LOG_GRACE_SECS = 3
 RBDS_PS_WINDOW_SECS = 60
 RBDS_PS_DYNAMIC_CHANGES = 3
 PTY_SCAN_SECS = 8.0
@@ -758,10 +757,10 @@ class RbdsLogger:
 
     Plain RadioText is logged as ``text (PS)`` whenever it changes. RadioText
     Plus is logged as ``Artist: A, Title: T, PS: P`` whenever its tagged artist
-    or title changes (only while the item is running). An RT line that just
-    repeats the current RT+ artist and title isn't logged a second time (it is
-    held a few seconds in case its RT+ is just behind). Lines are held until the
-    PS label settles, then written with the time the change actually arrived.
+    or title changes (only while the item is running). Both are logged even
+    when they describe the same song, so the file is a complete record of what
+    a receiver showed and when. Lines are held until the PS label settles, then
+    written with the time the change actually arrived.
     """
 
     def __init__(self, ps_tracker=None):
@@ -796,30 +795,13 @@ class RbdsLogger:
         title = tags.get("item.title", "")
         return (artist, title) if (artist or title) else None
 
-    @staticmethod
-    def _echoes(text, item):
-        """Plain RT that is just this RT+ (artist, title)."""
-        if not item:
-            return False
-        artist, title = (re.sub(r"[^a-z0-9]+", "", x.lower()) for x in item)
-        flat = re.sub(r"[^a-z0-9]+", "", text.lower())
-        if not title:
-            return False
-        if flat in (artist + title, title + artist, title + "by" + artist):
-            return True
-        # Longer artist/title pair contained in extra words ("Now playing: ...")
-        return len(title) >= 4 and (not artist or len(artist) >= 3) \
-            and title in flat and artist in flat
-
     def _flush(self, now, final=False):
         decided, label = self.tracker.label(now, final)
         if not decided:
             return []
-        # Hold entries a few seconds so an RT+ for the same song can claim them.
-        ready = [e for e in self.pending if final or now - e[0] >= RBDS_LOG_GRACE_SECS]
-        self.pending = [e for e in self.pending if e not in ready]
+        ready, self.pending = self.pending, []
         lines = []
-        for when, kind, a, b in sorted(ready, key=lambda e: e[0]):
+        for when, kind, a, b in ready:
             if kind == "plus":
                 parts = ([f"Artist: {a}"] if a else []) + ([f"Title: {b}"] if b else [])
                 if label:
@@ -842,16 +824,12 @@ class RbdsLogger:
                     log_file("rbds.log", "RT+ with song tags seen: logging artist and title")
                 if item != self.current_plus:
                     self.current_plus = item
-                    # An RT line that arrived just before its RT+ is the same song.
-                    self.pending = [e for e in self.pending
-                                    if not (e[1] == "rt" and self._echoes(e[2], item))]
                     self.pending.append((now, "plus", item[0], item[1]))
         if "radiotext" in data:
             text = _clean_rds_text(data["radiotext"])
             if text and text != self.current_rt:
                 self.current_rt = text
-                if not self._echoes(text, self.current_plus):
-                    self.pending.append((now, "rt", text, ""))
+                self.pending.append((now, "rt", text, ""))
         return self._flush(now)
 
     def finish(self, now):

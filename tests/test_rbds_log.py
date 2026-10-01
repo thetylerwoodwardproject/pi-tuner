@@ -100,30 +100,25 @@ class LoggerTests(unittest.TestCase):
         self.assertEqual(self.bodies(events), [
             "Title: Title Only, PS: WXTB", "Artist: Artist Only, PS: WXTB"])
 
-    def test_rt_arriving_just_before_its_rt_plus_is_not_logged_twice(self):
+    def test_rt_and_its_rt_plus_are_both_logged_in_arrival_order(self):
         events = [(at(9, 0), {"ps": "WXTB"}),
                   (at(9, 1), rt("Metallica - Enter Sandman")),
                   (at(9, 1, 1), plus("Enter Sandman", "Metallica")),
-                  (at(9, 1, 30), {"ps": "WXTB"})]
-        self.assertEqual(self.bodies(events), [
-            "Artist: Metallica, Title: Enter Sandman, PS: WXTB"])
+                  (at(9, 1, 2), plus("Enter Sandman", "Metallica")),   # repeat: not a change
+                  (at(9, 2), rt("Listen at wxtb.com"))]
+        out = self.feed_all(events)
+        self.assertEqual(out, [
+            "261001 09:01:00: Metallica - Enter Sandman (WXTB)",
+            "261001 09:01:01: Artist: Metallica, Title: Enter Sandman, PS: WXTB",
+            "261001 09:02:00: Listen at wxtb.com (WXTB)"])
 
-    def test_lines_come_out_in_time_order(self):
-        events = [(at(9, 0), {"ps": "WXTB"}),
-                  (at(9, 1), rt("Slogan one")),
-                  (at(9, 1, 1), plus("Song", "Artist")),
-                  (at(9, 1, 30), {"ps": "WXTB"})]
-        self.assertEqual(self.bodies(events), [
-            "Slogan one (WXTB)", "Artist: Artist, Title: Song, PS: WXTB"])
-
-    def test_rt_that_echoes_rt_plus_is_not_logged_twice(self):
+    def test_rt_plus_first_then_rt(self):
         events = [(at(9, 0), {"ps": "WXTB"}),
                   (at(9, 1), plus("Enter Sandman", "Metallica")),
-                  (at(9, 1, 2), rt("Metallica - Enter Sandman")),   # same song as RT
-                  (at(9, 2), rt("Listen at wxtb.com"))]             # different: logged
+                  (at(9, 1, 1), rt("Metallica - Enter Sandman"))]
         self.assertEqual(self.bodies(events), [
             "Artist: Metallica, Title: Enter Sandman, PS: WXTB",
-            "Listen at wxtb.com (WXTB)"])
+            "Metallica - Enter Sandman (WXTB)"])
 
     def test_empty_or_unusable_rt_plus_never_hides_rt(self):
         empty = {"radiotext_plus": {"item_running": True, "item_toggle": 0, "tags": []}}

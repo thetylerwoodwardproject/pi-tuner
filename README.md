@@ -368,9 +368,11 @@ For example:
 
   - A repeat of the text that's already showing is not logged again, but a text
     coming back after something else (a station rotating song and slogan) is.
-  - An RT line that just repeats the current RT+ artist and title isn't logged
-    twice. If a station's RT+ is blank or has no song tags, plain RadioText is
-    logged as usual, so nothing is lost.
+  - RadioText and RadioText Plus are both logged, even when they describe the
+    same song, so the file shows exactly what a receiver displayed and when.
+    RT+ splits the text into Artist and Title fields, so it appears as its own
+    line. If a station's RT+ is blank or has no song tags, only the plain
+    RadioText lines appear.
   - `PS` is the station's PS name. If a station scrolls its PS, the callsign
     worked out from its PI code is shown instead, or nothing.
   - WX stations don't have an `RBDS.log`.
