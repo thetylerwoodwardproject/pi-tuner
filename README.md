@@ -13,6 +13,8 @@ one Python program that systemd keeps running.
 
 - Tunes FM stations (stereo) and NOAA Weather Radio (mono).
 - Streams each station to a local [Icecast](https://icecast.org/) server.
+- Optionally decodes RBDS and shows the song info (RadioText) and station name
+  as the Icecast "now playing".
 - Keeps every station running — if a dongle is unplugged or a stream dies, it
   restarts that station automatically.
 - Optionally sends status and alerts to a [Zabbix](https://www.zabbix.com/)
@@ -98,7 +100,7 @@ BAND=fm            # fm | wx
 FREQUENCY=98.1
 SERIAL=00001001
 GAIN=40.2          # dB; delete this line for auto-gain
-MOUNT=/tuner1
+RBDS=true          # optional, fm only; RBDS text -> Icecast now-playing
 # ─── end user settings ─────────────────────────────
 ```
 
@@ -129,15 +131,18 @@ http://<raspberry-pi-ip>:8000/<mount>
 | `FREQUENCY` | — (required)    | Frequency in MHz (FM 88–108, WX 162.400–162.550) |
 | `SERIAL`    | —               | Dongle serial (matched by number)                |
 | `GAIN`      | none (auto)     | Tuner gain in dB, e.g. `40.2`                    |
-| `MOUNT`     | `/<file name>`  | Icecast mount path for this station              |
+| `RBDS`      | `false`         | FM only: send RBDS text to Icecast now-playing   |
+| `MOUNT`     | `/tuner1`, `/tuner2`, … | Icecast mount, numbered in file order    |
 
 ### `icecast.conf` (shared)
 
-| Key               | Default     | Meaning                         |
-|-------------------|-------------|---------------------------------|
-| `HOST`            | `localhost` | Icecast host                    |
-| `PORT`            | `8000`      | Icecast source port             |
-| `SOURCE_PASSWORD` | `CHANGEME`  | Icecast `<source-password>`     |
+| Key               | Default     | Meaning                                          |
+|-------------------|-------------|--------------------------------------------------|
+| `HOST`            | `localhost` | Icecast host                                     |
+| `PORT`            | `8000`      | Icecast source port                              |
+| `SOURCE_PASSWORD` | `CHANGEME`  | Icecast `<source-password>`                      |
+| `ADMIN_USER`      | `admin`     | Optional: admin login for now-playing updates    |
+| `ADMIN_PASSWORD`  | none        | Optional: if set, used instead of the source login |
 
 The installer fills these in for you; you normally only touch `icecast.conf` if
 you change your Icecast password later.
@@ -174,6 +179,60 @@ Detection is tone-only (it does not decode the SAME data). The thresholds are
 constants at the top of `tuner.py` (`EAS_TONE_RATIO`, `EAS_HOLD_SECS`,
 `EAS_COOLDOWN_SECS`) if you need to tune them for your signal levels.
 
+## RBDS now-playing (optional)
+
+Most US FM stations broadcast **RBDS** (the North American flavor of RDS), a
+tiny data stream hidden in the FM signal. It carries the station's 8-character
+**PS** name (e.g. `KXYZ-FM`) and a **RadioText (RT)** line, which is usually the
+current artist and title. Pi Tuner can decode it and show it as the Icecast
+"now playing" text, so your player displays something like:
+
+```
+Artist - Title (KXYZ-FM)
+```
+
+Turn it on per FM station by adding `RBDS=true` to its file (the installer asks
+you), then reload:
+
+```sh
+sudo systemctl reload pituner.service
+```
+
+How it works:
+
+```
+rtl_fm ──┬──▶ demux ──▶ ffmpeg ──▶ Icecast  (audio)
+         └──▶ redsea ──▶ tuner.py rbds-meta ──▶ Icecast /admin/metadata  (now playing)
+```
+
+- The raw 192 kHz FM signal is split before stereo decoding. One copy goes to the
+  audio path as usual; the other goes to
+  [redsea](https://github.com/windytan/redsea), which decodes RBDS and outputs
+  JSON.
+- `tuner.py rbds-meta` combines the latest RT and PS into `RT (PS)` and updates
+  the stream's metadata on its mount (`/tuner1`, `/tuner2`, …). If a station
+  sends only RT or only PS, that one is shown by itself. Only changes are sent.
+- The Icecast stream **name** is not changed — it stays the `NAME` from the
+  station file. (Icecast only sets the name when a source connects.)
+- Updates use the `source` login and `SOURCE_PASSWORD` from `icecast.conf`. To use
+  the admin login instead, set `ADMIN_USER` and `ADMIN_PASSWORD` there.
+- WX stations have no RBDS, and `RBDS=true` is ignored on them.
+
+To check it's working, open `http://<pi>:8000/status-json.xsl` (look for `title`
+on the mount) or watch `tail -f /var/www/pituner/rbds.log`.
+
+Notes:
+
+- RBDS needs a clean signal. Weak or noisy stations may decode slowly or not at
+  all; try adjusting `GAIN` and your antenna.
+- Some stations send only a PS name and no RadioText, or send ads and station
+  slogans in RT instead of song info. Pi Tuner shows whatever the station sends.
+- `redsea` is built from source by the installer. If it isn't installed, a
+  station with `RBDS=true` still streams audio normally and a warning is logged;
+  RBDS is just skipped.
+- Like the EAS detector, the RBDS helper is best-effort and can never interrupt
+  the audio.
+
 ## Troubleshooting
 
 | Problem                          | Check                                              |
@@ -183,6 +242,7 @@ constants at the top of `tuner.py` (`EAS_TONE_RATIO`, `EAS_HOLD_SECS`,
 | Config doesn't parse             | `tuner.py --dir /opt/pituner --check`              |
 | No audio / stream missing        | `http://<pi>:8000/status-json.xsl` in a browser    |
 | Changes didn't apply             | `sudo systemctl reload pituner.service`            |
+| No now-playing text              | `which redsea`, then `tail /var/www/pituner/rbds.log` |
 
 The service automatically restarts any station whose pipeline dies (dongle
 unplugged, Icecast unreachable, decode failure), backing off between attempts.
@@ -196,6 +256,7 @@ The Pi also keeps rotating logs on disk under `/var/www/pituner/`:
 | `tuner.log`  | Tuner health — station status changes, restarts, reloads             |
 | `eas.log`    | EAS attention-tone detections                                        |
 | `zabbix.log` | Mirror of what's sent to Zabbix (events only, not heartbeats)        |
+| `rbds.log`   | RBDS now-playing updates sent to Icecast, and any update failures    |
 
 They rotate by size (10 MB, keeping 5 compressed copies) via
 `/etc/logrotate.d/pituner`. View them with e.g. `tail -f /var/www/pituner/tuner.log`.
@@ -217,7 +278,7 @@ They rotate by size (10 MB, keeping 5 compressed copies) via
 ## Uninstall
 
 Remove the service, application files, the `pituner` user, and the `demux`
-decoder (system packages are left in place):
+and `redsea` decoders (system packages are left in place):
 
 ```sh
 sudo ./uninstall.sh          # asks before removing each thing

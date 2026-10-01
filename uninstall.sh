@@ -13,6 +13,7 @@ set -uo pipefail
 
 APP_DIR="/opt/pituner"
 DEMUX_BIN="/usr/local/bin/demux"
+REDSEA_BIN="/usr/local/bin/redsea"
 ICECAST_XML="/etc/icecast2/icecast.xml"
 
 # ------------------------------------------------------------- text helpers
@@ -103,6 +104,18 @@ if [ -f "${DEMUX_BIN}" ]; then
   fi
 else
   info "${DEMUX_BIN} not present."
+fi
+
+step "Remove the redsea RBDS decoder"
+if [ -f "${REDSEA_BIN}" ]; then
+  if confirm "Delete ${REDSEA_BIN}?"; then
+    rm -f "${REDSEA_BIN}"
+    ok "Removed ${REDSEA_BIN}."
+  else
+    info "Kept ${REDSEA_BIN}."
+  fi
+else
+  info "${REDSEA_BIN} not present."
 fi
 
 # ------------------------------------------------------------- icecast pw

@@ -226,6 +226,36 @@ else
   fi
 fi
 
+info "redsea decodes RBDS (station name / RadioText) for the Icecast now-playing."
+info "It is built from source (windytan/redsea)."
+
+if command -v redsea >/dev/null 2>&1; then
+  ok "redsea is already installed: $(command -v redsea)"
+else
+  if apt-get install -y libsndfile1-dev libliquid-dev nlohmann-json3-dev; then
+    BUILD_TMP="$(mktemp -d)"
+    if git clone --depth 1 https://github.com/windytan/redsea.git "${BUILD_TMP}/redsea"; then
+      (
+        cd "${BUILD_TMP}/redsea"
+        meson setup build >/dev/null 2>&1 && meson compile -C build >/dev/null 2>&1
+      )
+      REDSEA_BIN="$(find "${BUILD_TMP}/redsea/build" -name redsea -type f -perm -u+x 2>/dev/null | head -n1)"
+      if [ -n "${REDSEA_BIN}" ]; then
+        install -m 755 "${REDSEA_BIN}" /usr/local/bin/redsea
+        ok "redsea installed to /usr/local/bin/redsea"
+      else
+        warn "redsea failed to build. RBDS now-playing will be disabled; audio is unaffected."
+        warn "To fix later:  git clone https://github.com/windytan/redsea && meson setup build && meson compile -C build"
+      fi
+    else
+      warn "Could not download redsea source. RBDS now-playing unavailable."
+    fi
+    rm -rf "${BUILD_TMP}"
+  else
+    warn "redsea build dependencies are not available in apt. RBDS now-playing unavailable."
+  fi
+fi
+
 # ------------------------------------------------------------- icecast
 step "3 of 8: Configure Icecast"
 warn "This resets the Icecast source/admin passwords and restarts Icecast,"
@@ -276,6 +306,9 @@ cat > "${APP_DIR}/icecast.conf" <<EOF
 HOST=localhost
 PORT=8000
 SOURCE_PASSWORD=${SOURCE_PASS}
+# Optional: admin credentials for RBDS now-playing updates (defaults to the source password)
+# ADMIN_USER=admin
+# ADMIN_PASSWORD=
 # ─── end user settings ─────────────────────────────
 EOF
 
@@ -370,7 +403,7 @@ else
 fi
 
 write_station() {
-  local name="$1" band="$2" freq="$3" serial="$4" gain="$5" mount="$6" file="$7"
+  local name="$1" band="$2" freq="$3" serial="$4" gain="$5" rbds="$6" file="$7"
   {
     echo "# Pi Tuner v2 station"
     echo "#"
@@ -380,7 +413,7 @@ write_station() {
     echo "FREQUENCY=${freq}"
     echo "SERIAL=${serial}"
     [ -n "${gain}" ] && echo "GAIN=${gain}"
-    echo "MOUNT=${mount}"
+    [ "${band}" = "fm" ] && echo "RBDS=${rbds}"
     echo "# ─── end user settings ─────────────────────────────"
   } > "${file}"
 }
@@ -400,8 +433,11 @@ if [ "${INTERACTIVE}" = "1" ] \
     serial="${SERIALS[$((i-1))]:-$(printf '0000100%d' "${i}")}"
     serial=$(ask "  Dongle serial" "${serial}")
     gain=$(ask "  Gain in dB (press Enter for auto-gain)" "")
-    mount=$(ask "  Icecast mount path" "/tuner${i}")
-    write_station "${name}" "${band}" "${freq}" "${serial}" "${gain}" "${mount}" \
+    rbds=false
+    if [ "${band}" = "fm" ] && confirm "  Send RBDS text to Icecast now-playing?"; then
+      rbds=true
+    fi
+    write_station "${name}" "${band}" "${freq}" "${serial}" "${gain}" "${rbds}" \
       "${APP_DIR}/stations/$(printf 'station%d.conf' "${i}")"
     ok "Wrote station ${i} (${name}, ${band} ${freq} MHz)."
   done
@@ -521,7 +557,7 @@ echo "    BAND=fm            # fm | wx"
 echo "    FREQUENCY=98.1"
 echo "    SERIAL=00001001"
 echo "    GAIN=40.2          # optional; delete for auto-gain"
-echo "    MOUNT=/mystation"
+echo "    RBDS=true          # optional (fm only); RBDS text -> Icecast now-playing"
 echo ""
 echo "  Icecast admin password: ${ADMIN_PASS}"
 echo "  Icecast source password (also in icecast.conf): ${SOURCE_PASS}"

@@ -18,12 +18,18 @@ Usage:
 
     tuner.py detect-eas --dir /opt/pituner <name> <rate> <channels>
              run the EAS attention-tone detector on raw s16le PCM from stdin.
+
+    tuner.py rbds-meta --dir /opt/pituner <mount>
+             read redsea JSON lines from stdin and push the decoded RBDS
+             text to the Icecast now-playing metadata for <mount>.
 """
 import argparse
+import base64
 import json
 import math
 import os
 import re
+import shutil
 import signal
 import socket
 import struct
@@ -31,6 +37,9 @@ import subprocess
 import sys
 import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 
 DEFAULT_DIR = "/opt/pituner"
 TUNER_PATH = os.path.realpath(os.path.abspath(__file__))
@@ -88,6 +97,10 @@ def _parse_float(value):
         return None
 
 
+def _parse_bool(value):
+    return str(value or "").strip().lower() in ("1", "true", "yes", "on")
+
+
 def _safe_name(text):
     """Strip shell metacharacters so a name is safe inside a quoted ffmpeg arg."""
     return re.sub(r'["\'`$\\;|&<>()]', "", str(text)).strip()
@@ -105,6 +118,12 @@ def _eas_tee(name, sample_rate, channels, eas_dir):
     """Return the pipeline fragment that taps audio to the EAS tone detector."""
     return (f"tee --output-error=warn >(python3 {TUNER_PATH} detect-eas "
             f'--dir "{eas_dir}" "{name}" {sample_rate} {channels})')
+
+
+def _rbds_tee(mount, base_dir):
+    """Return the pipeline fragment that taps the 192 kHz MPX to RBDS decoding."""
+    return (f"tee --output-error=warn >(redsea -r 192000 2>/dev/null | "
+            f'python3 {TUNER_PATH} rbds-meta --dir "{base_dir}" "{mount}")')
 
 
 # --------------------------------------------------------- device resolution
@@ -187,7 +206,7 @@ def load_stations(stations_dir):
             log(f"station {name}: missing/invalid FREQUENCY, skipping", err=True)
             continue
         serial = raw.get("serial", "").strip()
-        mount = _safe_mount(raw.get("mount") or ("/" + os.path.splitext(filename)[0]))
+        mount = _safe_mount(raw.get("mount") or f"/tuner{len(stations) + 1}")
 
         stations.append({
             "name": name,
@@ -196,12 +215,14 @@ def load_stations(stations_dir):
             "serial": serial,
             "gain": raw.get("gain", "").strip(),
             "mount": mount,
+            "rbds": _parse_bool(raw.get("rbds")) and band == "fm",
             "conf": filename,
         })
     return stations
 
 
-def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR):
+def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
+                  rbds=False):
     """Assemble the shell pipeline for one station."""
     freq_hz = int(cfg["freq"] * 1_000_000)
     name = _safe_name(cfg["name"])
@@ -218,8 +239,10 @@ def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR):
 
     gain = f"-g {cfg['gain']} " if cfg.get("gain") else ""
     cmd = (f"rtl_fm -d {device_index} -M fm -l 0 -A std -p 0 -s 192000 {gain}"
-           f"-F 9 -f {freq_hz} | "
-           f"demux -r 192000 -R 48000 -d 75")
+           f"-F 9 -f {freq_hz}")
+    if rbds and cfg.get("rbds"):
+        cmd += f" | {_rbds_tee(cfg['mount'], eas_dir)}"
+    cmd += " | demux -r 192000 -R 48000 -d 75"
     if eas:
         cmd += f" | {_eas_tee(name, 48000, 2, eas_dir)}"
     return cmd + f" | ffmpeg -f s16le -ar 48000 -ac 2 -i pipe:0 {ffmpeg}"
@@ -400,6 +423,78 @@ def run_eas_detector(base_dir, name, sample_rate, channels):
         zbx.send([(zbx.key_eas, 0)])
 
 
+# ------------------------------------------------------------------- RBDS
+
+_CTRL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def _clean_rds_text(text):
+    """Collapse control characters and padding in an RDS string."""
+    return re.sub(r"\s+", " ", _CTRL_RE.sub(" ", str(text or ""))).strip()
+
+
+def rbds_song(state):
+    """Now-playing text: 'RadioText (PS)', or whichever of the two we have."""
+    rt, ps = state.get("radiotext", ""), state.get("ps", "")
+    if rt and ps:
+        return f"{rt} ({ps})"
+    return rt or ps
+
+
+def update_icecast_metadata(ice, mount, song):
+    """Set the Icecast now-playing text for a mount. Returns True on success."""
+    user, password = "source", ice["password"]
+    if ice.get("admin_password"):
+        user, password = ice["admin_user"], ice["admin_password"]
+    query = urllib.parse.urlencode(
+        {"mode": "updinfo", "mount": mount, "song": song, "charset": "UTF-8"})
+    url = f"http://{ice['host']}:{ice['port']}/admin/metadata?{query}"
+    req = urllib.request.Request(url)
+    token = base64.b64encode(f"{user}:{password}".encode()).decode()
+    req.add_header("Authorization", f"Basic {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=5):
+            return True
+    except (urllib.error.URLError, OSError) as e:
+        log_file("rbds.log", f"{mount}: metadata update failed: {e}")
+        return False
+
+
+def run_rbds_meta(base_dir, mount, stream=None, updater=update_icecast_metadata):
+    """Read redsea JSON lines from stdin and keep Icecast's now-playing current.
+
+    Best-effort: bad lines and HTTP errors are ignored, and stdin is always
+    drained so the audio pipeline is never stalled. Exits cleanly on EOF.
+    """
+    stream = stream if stream is not None else sys.stdin
+    conf = parse_keyvalue(os.path.join(base_dir, "icecast.conf"))
+    ice = {
+        "host": conf.get("host", "localhost"),
+        "port": conf.get("port", "8000"),
+        "password": conf.get("source_password", "hackme"),
+        "admin_user": conf.get("admin_user", "admin"),
+        "admin_password": conf.get("admin_password", ""),
+    }
+    state = {}
+    last_sent = None
+    for line in stream:
+        try:
+            data = json.loads(line)
+        except ValueError:
+            continue
+        if not isinstance(data, dict):
+            continue
+        for key in ("ps", "radiotext"):
+            if key in data:
+                state[key] = _clean_rds_text(data[key])
+        song = rbds_song(state)
+        if not song or song == last_sent:
+            continue
+        if updater(ice, mount, song):
+            last_sent = song
+            log_file("rbds.log", f"{mount}: now playing: {song}")
+
+
 # ---------------------------------------------------------------- station
 
 class Station:
@@ -426,6 +521,7 @@ class Tuner:
         self._next_heartbeat = 0.0
         self.reload_requested = False
         self.running = False
+        self._warned_redsea = False
 
     # -- config ----------------------------------------------------------
 
@@ -436,12 +532,22 @@ class Tuner:
             "port": ice.get("port", "8000"),
             "password": ice.get("source_password", "hackme"),
         }
+        self._warned_redsea = False
         zbx = parse_keyvalue(os.path.join(self.dir, "zabbix.conf"))
         self.zbx = ZabbixSender(zbx)
         eas_on = str(zbx.get("eas_detect", "false")).lower() in ("1", "true", "yes", "on")
         self.eas_enabled = eas_on and self.zbx.enabled
         self.stations = [Station(c) for c in
                          load_stations(os.path.join(self.dir, "stations"))]
+
+    def rbds_available(self):
+        """True if redsea is installed; warns once per load if not."""
+        if shutil.which("redsea"):
+            return True
+        if not self._warned_redsea:
+            log("RBDS requested but redsea is not installed, skipping RBDS", err=True)
+            self._warned_redsea = True
+        return False
 
     # -- devices ---------------------------------------------------------
 
@@ -482,8 +588,9 @@ class Tuner:
             self.set_status(st, "serial_not_found", f"serial {st.cfg['serial']} not found")
             st.retry_at = time.time() + 10
             return
+        rbds = bool(st.cfg.get("rbds")) and self.rbds_available()
         cmd = build_command(st.cfg, self.ice, index,
-                            eas=self.eas_enabled, eas_dir=self.dir)
+                            eas=self.eas_enabled, eas_dir=self.dir, rbds=rbds)
         try:
             st.proc = subprocess.Popen(
                 cmd, shell=True, stdout=subprocess.DEVNULL,
@@ -584,8 +691,9 @@ def run_check(base_dir):
     tuner.refresh_devices()
     log(f"icecast: source@{tuner.ice['host']}:{tuner.ice['port']} "
         f"(password {'set' if tuner.ice['password'] else 'MISSING'})")
-    log(f"zabbix: {'enabled -> ' + tuner.zbx.server + ':' + str(tuner.zbx.port)
-                 if tuner.zbx.enabled else 'disabled'}")
+    zbx_state = (f"enabled -> {tuner.zbx.server}:{tuner.zbx.port}"
+                 if tuner.zbx.enabled else "disabled")
+    log(f"zabbix: {zbx_state}")
     if not tuner.devices:
         log("no RTL-SDR devices found via rtl_test", err=True)
     else:
@@ -600,8 +708,9 @@ def run_check(base_dir):
             log(f"station {st.name}: SERIAL {st.cfg['serial'] or '(none)'} NOT FOUND",
                 err=True)
         else:
+            rbds = bool(st.cfg.get("rbds")) and tuner.rbds_available()
             cmd = build_command(st.cfg, tuner.ice, index,
-                                eas=tuner.eas_enabled, eas_dir=tuner.dir)
+                                eas=tuner.eas_enabled, eas_dir=tuner.dir, rbds=rbds)
             log(f"station {st.name}: device {index} -> {cmd}")
     return 0
 
@@ -619,11 +728,22 @@ def _main_detect_eas(argv):
     return 0
 
 
+def _main_rbds_meta(argv):
+    parser = argparse.ArgumentParser(prog="tuner.py rbds-meta")
+    parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
+    parser.add_argument("mount", help="Icecast mount point, e.g. /tuner1")
+    args = parser.parse_args(argv)
+    run_rbds_meta(args.dir, args.mount)
+    return 0
+
+
 def main(argv=None):
     if argv is None:
         argv = sys.argv[1:]
     if argv and argv[0] == "detect-eas":
         return _main_detect_eas(argv[1:])
+    if argv and argv[0] == "rbds-meta":
+        return _main_rbds_meta(argv[1:])
 
     parser = argparse.ArgumentParser(prog="tuner.py", description=__doc__)
     parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory (default %(default)s)")
