@@ -203,7 +203,7 @@ status heartbeat to it (no agent needed on the Pi).
 
 1. On your Zabbix server, import `zabbix_template.xml`
    (Configuration → Templates → Import).
-2. Create a host (e.g. `pituner`) and attach the `Pi Tuner v2` template.
+2. Create a host (e.g. `pituner`) and attach the `Pi-Tuner` template.
 3. Edit `zabbix.conf` on the Pi:
    - `ENABLED=true`
    - `SERVER` = your Zabbix server

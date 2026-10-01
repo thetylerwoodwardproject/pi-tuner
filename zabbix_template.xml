@@ -9,9 +9,9 @@
     </groups>
     <templates>
         <template>
-            <template>Pi Tuner v2</template>
-            <name>Pi Tuner v2</name>
-            <description>Pi Tuner v2 SDR streaming appliance. Data is pushed by tuner.py on the Pi using the Zabbix trapper (zabbix_sender) protocol. Attach this template to the Zabbix host named to match HOSTNAME in zabbix.conf.</description>
+            <template>Pi-Tuner</template>
+            <name>Pi-Tuner</name>
+            <description>Pi-Tuner SDR streaming appliance. Data is pushed by tuner.py on the Pi using the Zabbix trapper (zabbix_sender) protocol. Attach this template to the Zabbix host named to match HOSTNAME in zabbix.conf.</description>
             <groups>
                 <group>
                     <name>Templates</name>
@@ -19,7 +19,7 @@
             </groups>
             <items>
                 <item>
-                    <name>Pi Tuner event</name>
+                    <name>Pi-Tuner event</name>
                     <type>TRAP</type>
                     <key>pituner.event</key>
                     <delay>0</delay>
@@ -27,10 +27,10 @@
                     <trends>0</trends>
                     <status>ENABLED</status>
                     <value_type>TEXT</value_type>
-                    <description>Last event pushed by the Pi Tuner (station started/down/recovered, serial not found, config errors).</description>
+                    <description>Last event pushed by the Pi-Tuner (station started/down/recovered, serial not found, config errors).</description>
                 </item>
                 <item>
-                    <name>Pi Tuner status</name>
+                    <name>Pi-Tuner status</name>
                     <type>TRAP</type>
                     <key>pituner.status</key>
                     <delay>0</delay>
@@ -41,7 +41,7 @@
                     <description>JSON snapshot of per-station status, e.g. {"station1":"streaming","station2":"down"}. Refreshed on every heartbeat and on status changes.</description>
                 </item>
                 <item>
-                    <name>Pi Tuner stations active</name>
+                    <name>Pi-Tuner stations active</name>
                     <type>TRAP</type>
                     <key>pituner.stations_active</key>
                     <delay>0</delay>
@@ -52,7 +52,7 @@
                     <description>Number of stations currently streaming.</description>
                 </item>
                 <item>
-                    <name>Pi Tuner heartbeat</name>
+                    <name>Pi-Tuner heartbeat</name>
                     <type>TRAP</type>
                     <key>pituner.heartbeat</key>
                     <delay>0</delay>
@@ -63,7 +63,7 @@
                     <description>Liveness marker sent every INTERVAL seconds (zabbix.conf). A missing value means the Pi or tuner.py is down.</description>
                 </item>
                 <item>
-                    <name>Pi Tuner EAS attention tone</name>
+                    <name>Pi-Tuner EAS attention tone</name>
                     <type>TRAP</type>
                     <key>pituner.eas</key>
                     <delay>0</delay>
@@ -76,36 +76,36 @@
             </items>
             <triggers>
                 <trigger>
-                    <expression>{Pi Tuner v2:pituner.heartbeat.nodata(5m)}=1</expression>
-                    <name>Pi Tuner heartbeat lost</name>
+                    <expression>{Pi-Tuner:pituner.heartbeat.nodata(5m)}=1</expression>
+                    <name>Pi-Tuner heartbeat lost</name>
                     <priority>HIGH</priority>
                     <description>No heartbeat received for 5 minutes - the Pi or the tuner service is down.</description>
                     <status>ENABLED</status>
                 </trigger>
                 <trigger>
-                    <expression>{Pi Tuner v2:pituner.eas.last()}=1</expression>
-                    <name>Pi Tuner EAS attention tone heard</name>
+                    <expression>{Pi-Tuner:pituner.eas.last()}=1</expression>
+                    <name>Pi-Tuner EAS attention tone heard</name>
                     <priority>HIGH</priority>
                     <description>The EAS/SAME attention tone (853+960 Hz) was heard on a monitored station. Auto-recovers when the item drops back to 0.</description>
                     <status>ENABLED</status>
                 </trigger>
                 <trigger>
-                    <expression>find({Pi Tuner v2:pituner.status.last()},"down")=1</expression>
-                    <name>Pi Tuner station down</name>
+                    <expression>find({Pi-Tuner:pituner.status.last()},"down")=1</expression>
+                    <name>Pi-Tuner station down</name>
                     <priority>HIGH</priority>
                     <description>At least one station has a pipeline that exited unexpectedly (dongle unplugged, Icecast unreachable, or decode failure).</description>
                     <status>ENABLED</status>
                 </trigger>
                 <trigger>
-                    <expression>find({Pi Tuner v2:pituner.status.last()},"serial_not_found")=1</expression>
-                    <name>Pi Tuner serial not found</name>
+                    <expression>find({Pi-Tuner:pituner.status.last()},"serial_not_found")=1</expression>
+                    <name>Pi-Tuner serial not found</name>
                     <priority>HIGH</priority>
                     <description>A configured dongle serial is not present on any connected device.</description>
                     <status>ENABLED</status>
                 </trigger>
                 <trigger>
-                    <expression>{Pi Tuner v2:pituner.stations_active.last()}=0</expression>
-                    <name>Pi Tuner no stations streaming</name>
+                    <expression>{Pi-Tuner:pituner.stations_active.last()}=0</expression>
+                    <name>Pi-Tuner no stations streaming</name>
                     <priority>WARNING</priority>
                     <description>Zero stations are currently streaming.</description>
                     <status>ENABLED</status>
