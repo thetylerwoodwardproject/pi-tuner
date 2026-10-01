@@ -75,77 +75,24 @@ class LoggerTests(unittest.TestCase):
         out = self.feed_all([(at(9, 0, i), rt("A - B")) for i in range(5)])
         self.assertEqual(len(out), 1)
 
-    def test_rt_plus_line_format(self):
-        out = self.feed_all([(at(9, 40), {"ps": "KQYZ-FM"}),
-                             (at(9, 44, 52), plus("Enter Sandman", "Metallica"))])
-        self.assertEqual(out, ["261001 09:44:52: Artist: Metallica, Title: Enter Sandman, PS: KQYZ-FM"])
-
-    def test_rt_plus_every_change_logged_repeats_not(self):
+    def test_rt_plus_is_ignored(self):
         events = [(at(9, 0), {"ps": "WXTB"}),
                   (at(9, 1), plus("Enter Sandman", "Metallica")),
-                  (at(9, 1, 5), plus("Enter Sandman", "Metallica")),   # repeat
-                  (at(9, 4), plus("Bat Country", "Avenged Sevenfold")),
-                  (at(9, 8), plus("Enter Sandman", "Metallica"))]      # back again: a change
-        self.assertEqual(self.bodies(events), [
-            "Artist: Metallica, Title: Enter Sandman, PS: WXTB",
-            "Artist: Avenged Sevenfold, Title: Bat Country, PS: WXTB",
-            "Artist: Metallica, Title: Enter Sandman, PS: WXTB"])
+                  (at(9, 2), rt("Metallica - Enter Sandman")),
+                  (at(9, 3), plus("Bat Country", "Avenged Sevenfold")),
+                  (at(9, 4), {"radiotext": "Metallica - Enter Sandman",
+                              **plus("Other", "Artist")})]
+        # only the plain RT change is logged; RT+ never creates a line
+        self.assertEqual(self.feed_all(events),
+                         ["261001 09:02:00: Metallica - Enter Sandman (WXTB)"])
 
-    def test_rt_plus_partial_tags_and_not_running(self):
-        events = [(at(9, 0), {"ps": "WXTB"}),
-                  (at(9, 1), plus("Title Only")),
-                  (at(9, 2), plus("Some Ad", "Sponsor", running=False)),
-                  (at(9, 3), {"radiotext_plus": {"item_running": True, "tags": [
-                      {"content-type": "item.artist", "data": "Artist Only"}]}})]
-        self.assertEqual(self.bodies(events), [
-            "Title: Title Only, PS: WXTB", "Artist: Artist Only, PS: WXTB"])
-
-    def test_rt_and_rt_plus_together_share_one_line_without_colon(self):
-        events = [(at(9, 0), {"ps": "WXTB"}),
-                  (at(9, 1), rt("Metallica - Enter Sandman")),
-                  (at(9, 1, 1), plus("Enter Sandman", "Metallica")),
-                  (at(9, 1, 2), plus("Enter Sandman", "Metallica")),   # repeat: not a change
-                  (at(9, 2), rt("Listen at wxtb.com"))]
-        self.assertEqual(self.feed_all(events), [
-            "261001 09:01:00 RT: Metallica - Enter Sandman, Artist: Metallica, "
-            "Title: Enter Sandman, PS: WXTB",
-            "261001 09:02:00: Listen at wxtb.com (WXTB)"])
-
-    def test_rt_plus_first_then_rt_keeps_first_arrival_time(self):
-        events = [(at(9, 0), {"ps": "WXTB"}),
-                  (at(9, 1), plus("Enter Sandman", "Metallica")),
-                  (at(9, 1, 3), rt("Metallica - Enter Sandman"))]
-        self.assertEqual(self.feed_all(events), [
-            "261001 09:01:00 RT: Metallica - Enter Sandman, Artist: Metallica, "
-            "Title: Enter Sandman, PS: WXTB"])
-
-    def test_far_apart_changes_are_separate_lines_in_order(self):
-        events = [(at(9, 0), {"ps": "WXTB"}),
-                  (at(9, 1), rt("Slogan one")),
-                  (at(9, 1, 30), plus("Song", "Artist"))]
-        self.assertEqual(self.feed_all(events), [
-            "261001 09:01:00: Slogan one (WXTB)",
-            "261001 09:01:30: Artist: Artist, Title: Song, PS: WXTB"])
-
-    def test_two_rt_changes_inside_the_window_are_not_merged(self):
-        events = [(at(9, 0), {"ps": "WXTB"}), (at(9, 1), rt("One")), (at(9, 1, 2), rt("Two"))]
-        self.assertEqual(self.bodies(events), ["One (WXTB)", "Two (WXTB)"])
-
-    def test_empty_or_unusable_rt_plus_never_hides_rt(self):
+    def test_blank_or_unusable_rt_plus_changes_nothing(self):
         empty = {"radiotext_plus": {"item_running": True, "item_toggle": 0, "tags": []}}
-        other = {"radiotext_plus": {"item_running": True, "tags": [
-            {"content-type": "item.album", "data": "Some Album"}]}}
         texts = ["WPR Music", "WPR.org", "WLSU 88.9", "Wisconsin Public Radio"]
         events = [(at(9, 0), {"ps": "WLSU"})]
         for i, t in enumerate(texts):
-            events += [(at(9, 0, 1 + i * 12), rt(t)), (at(9, 0, 2 + i * 12), empty),
-                       (at(9, 0, 3 + i * 12), other)]
+            events += [(at(9, 0, 1 + i * 12), rt(t)), (at(9, 0, 2 + i * 12), empty)]
         self.assertEqual(self.bodies(events), [f"{t} (WLSU)" for t in texts])
-
-    def test_rt_and_rt_plus_in_one_message(self):
-        both = {"radiotext": "Plain Text", **plus("T", "A")}
-        self.assertEqual(self.feed_all([(at(9, 0), {"ps": "X"}), (at(9, 1), both)]),
-                         ["261001 09:01:00 RT: Plain Text, Artist: A, Title: T, PS: X"])
 
     def test_seed_from_existing_log_prevents_relog_of_current(self):
         lg = tuner.RbdsLogger()
@@ -153,16 +100,6 @@ class LoggerTests(unittest.TestCase):
         self.assertEqual(self.feed_all([(at(9, 30), {"ps": "WXTB"}),
                                         (at(9, 30, 5), rt("Metallica - Enter Sandman")),
                                         (at(9, 30, 30), {"ps": "WXTB"})], lg), [])
-        lg3 = tuner.RbdsLogger()
-        lg3.seed(["261001 09:44:52 RT: A, B - C, Artist: Metallica, Title: Enter Sandman, PS: KQYZ-FM"],
-                 at(9, 50))
-        self.assertEqual(self.feed_all([(at(9, 50), {"ps": "KQYZ-FM"}),
-                                        (at(9, 50, 20), {**rt("A, B - C"), **plus("Enter Sandman", "Metallica")}),
-                                        (at(9, 51), {"ps": "KQYZ-FM"})], lg3), [])
-        lg2 = tuner.RbdsLogger()
-        lg2.seed(["261001 09:44:52: Artist: Metallica, Title: Enter Sandman, PS: KQYZ-FM"], at(9, 50))
-        self.assertEqual(self.feed_all([(at(9, 50), {"ps": "KQYZ-FM"}),
-                                        (at(9, 50, 20), plus("Enter Sandman", "Metallica"))], lg2), [])
 
 
 class RunTests(unittest.TestCase):

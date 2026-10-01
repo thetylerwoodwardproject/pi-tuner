@@ -357,27 +357,19 @@ For example:
   /opt/pituner/recordings/STATION_NAME/YYYY/MM/DD/RBDS.log
   ```
 
-  Every change is logged, in the Pi's local time, with a new file each day.
-  The line depends on what the station sends:
+  Every RadioText change is logged, in the Pi's local time, with a new file each
+  day, one line per change:
 
   ```
-  261001 09:41:07: WPR Music (WLSU)
-  261001 09:44:52: Artist: Metallica, Title: Enter Sandman, PS: KQYZ-FM
-  261001 09:46:10 RT: Avenged Sevenfold - Bat Country, Artist: Avenged Sevenfold, Title: Bat Country, PS: KQYZ-FM
+  261001 09:21:15: Metallica - Enter Sandman (WXTB)
+  261001 09:23:16: Avenged Sevenfold - Bat Country (WXTB)
   ```
 
-  - **RadioText only:** `text (PS)`.
-  - **RadioText Plus only:** RT+ splits the text into `Artist:` and `Title:`
-    fields.
-  - **Both:** when the RadioText and its RT+ change within about 5 seconds of each
-    other, they share one line. It starts `RT:` with no colon after the time, so
-    you can see exactly what a receiver displayed. The time is when the first of
-    the two arrived.
   - A repeat of the text that's already showing is not logged again, but a text
     coming back after something else (a station rotating song and slogan) is.
-  - If a station's RT+ is blank or has no song tags, you just get the plain
-    RadioText lines.
-  - `PS` is the station's PS name. If a station scrolls its PS, the callsign
+  - Only plain RadioText is logged. RadioText Plus (the tagged artist and title
+    fields) is ignored.
+  - `(WXTB)` is the station's PS name. If a station scrolls its PS, the callsign
     worked out from its PI code is shown instead, or nothing.
   - WX stations don't have an `RBDS.log`.
 - **Plan for disk space.** Each station uses about 1.4 GB a day (58 MB an hour).

@@ -59,7 +59,6 @@ REC_RETRY_SECS = 30
 REC_PRUNE_SECS = 3600
 RBDS_LOG_FILE = "RBDS.log"
 RBDS_PS_SETTLE_SECS = 12
-RBDS_LOG_PAIR_SECS = 5
 RBDS_PS_WINDOW_SECS = 60
 RBDS_PS_DYNAMIC_CHANGES = 3
 PTY_SCAN_SECS = 8.0
@@ -687,7 +686,7 @@ def rbds_log_path(base_dir, name, when):
                         t.strftime("%m"), t.strftime("%d"), RBDS_LOG_FILE)
 
 
-_RBDS_LOG_LINE_RE = re.compile(r"^(\d{6} \d{2}:\d{2}:\d{2}):? (.*)$")
+_RBDS_LOG_LINE_RE = re.compile(r"^(\d{6} \d{2}:\d{2}:\d{2}): (.*)$")
 _PS_SUFFIX_RE = re.compile(r" \([^()]{1,8}\)$")
 
 
@@ -735,131 +734,52 @@ class PsTracker:
         return (False, "")
 
 
-def _parse_log_body(body):
-    """(rt, artist, title) from a log body; ``rt`` and the tags are "" when
-    absent. Handles ``text (PS)``, ``Artist:/Title:`` and ``RT:, Artist:, Title:``."""
-    body = re.sub(r", PS: [^,]*$", "", body)
-    rt = artist = title = ""
-    has_plus = False
-    if body.startswith("RT: "):
-        body = body[len("RT: "):]
-        head, sep, tail = re.split(r"(, (?:Artist|Title): )", body, maxsplit=1) \
-            if re.search(r", (?:Artist|Title): ", body) else (body, "", "")
-        rt, body = head, (sep[2:] + tail if sep else "")
-    elif not body.startswith(("Artist: ", "Title: ")):
-        return (_PS_SUFFIX_RE.sub("", body), "", "")
-    if body.startswith("Artist: "):
-        has_plus = True
-        artist, sep, rest = body[len("Artist: "):].partition(", Title: ")
-        title = rest if sep else ""
-    elif body.startswith("Title: "):
-        has_plus = True
-        title = body[len("Title: "):]
-    return (rt, artist, title) if (has_plus or rt) else ("", "", "")
-
-
 def _log_line_time(line):
     return time.mktime(time.strptime(line[:15], "%y%m%d %H:%M:%S"))
 
 
 class RbdsLogger:
-    """Turn redsea output into RBDS.log lines: every change is logged.
+    """Turn redsea output into RBDS.log lines: every RadioText change is logged.
 
-    A plain RadioText change is logged as ``text (PS)``. A RadioText Plus
-    change (tagged artist or title, only while the item is running) is logged
-    as ``Artist: A, Title: T, PS: P``. When both change together, within
-    RBDS_LOG_PAIR_SECS of each other, they share one line with no colon after
-    the time, so a song shows exactly what a receiver displayed::
-
-        261001 09:44:52 RT: Metallica - Enter Sandman, Artist: Metallica, Title: Enter Sandman, PS: KQYZ-FM
-
-    Lines are held until the PS label settles, then written with the time the
-    change first arrived.
+    Each line is ``YYMMDD HH:MM:SS: text (PS)``. A repeat of the text that is
+    already showing isn't logged again, but a text coming back after another
+    one is. RadioText Plus is ignored. Lines are held until the PS label
+    settles (see PsTracker), then written with the time the text arrived.
     """
 
     def __init__(self, ps_tracker=None):
         self.tracker = ps_tracker if ps_tracker is not None else PsTracker()
         self._owns_tracker = ps_tracker is None
-        self.rtplus_seen = False
-        self.current_rt = None        # last plain RT text
-        self.current_plus = None      # last (artist, title)
-        self.group = None             # open entry: {"when", "rt", "plus"}
-        self.ready = []               # closed entries waiting for the PS label
+        self.current = None   # last RT text
+        self.pending = []     # [(when, text)] waiting for the PS label
 
     def seed(self, lines, now):
         """Prime from today's log so a restart doesn't re-log the current text."""
         for line in lines:
             m = _RBDS_LOG_LINE_RE.match(line.strip())
-            if not m:
-                continue
-            rt, artist, title = _parse_log_body(m.group(2))
-            if rt:
-                self.current_rt = rt
-            if artist or title:
-                self.current_plus = (artist, title)
-
-    def _rtplus_item(self, plus):
-        tags = {}
-        for tag in plus.get("tags", []):
-            if isinstance(tag, dict):
-                tags[tag.get("content-type")] = _clean_rds_text(tag.get("data"))
-        if not plus.get("item_running", True):
-            return None
-        artist = tags.get("item.artist") or tags.get("item.band") or ""
-        title = tags.get("item.title", "")
-        return (artist, title) if (artist or title) else None
-
-    def _add(self, now, field, value):
-        """Add a change to the open entry, or start a new one."""
-        if self.group is not None and (field in self.group
-                                       or now - self.group["when"] >= RBDS_LOG_PAIR_SECS):
-            self.ready.append(self.group)
-            self.group = None
-        if self.group is None:
-            self.group = {"when": now}
-        self.group[field] = value
-
-    def _format(self, entry, label):
-        stamp = time.strftime("%y%m%d %H:%M:%S", time.localtime(entry["when"]))
-        rt, plus = entry.get("rt"), entry.get("plus")
-        tags = []
-        if plus:
-            tags = ([f"Artist: {plus[0]}"] if plus[0] else []) + \
-                   ([f"Title: {plus[1]}"] if plus[1] else [])
-        if rt and not plus:
-            return f"{stamp}: {rt} ({label})" if label else f"{stamp}: {rt}"
-        parts = ([f"RT: {rt}"] if rt else []) + tags + ([f"PS: {label}"] if label else [])
-        return f"{stamp}{' ' if rt else ': '}{', '.join(parts)}"
+            if m:
+                self.current = _PS_SUFFIX_RE.sub("", m.group(2))
 
     def _flush(self, now, final=False):
-        if self.group is not None and (final or now - self.group["when"] >= RBDS_LOG_PAIR_SECS):
-            self.ready.append(self.group)
-            self.group = None
         decided, label = self.tracker.label(now, final)
         if not decided:
             return []
-        lines = [self._format(e, label) for e in self.ready]
-        self.ready = []
+        lines = []
+        for when, text in self.pending:
+            shown = f"{text} ({label})" if label else text
+            lines.append(f"{time.strftime('%y%m%d %H:%M:%S', time.localtime(when))}: {shown}")
+        self.pending = []
         return lines
 
     def feed(self, data, now):
         """Take one redsea JSON dict; return the log lines now ready (maybe none)."""
         if self._owns_tracker:
             self.tracker.update(data, now)
-        if isinstance(data.get("radiotext_plus"), dict):
-            item = self._rtplus_item(data["radiotext_plus"])
-            if item is not None:
-                if not self.rtplus_seen:
-                    self.rtplus_seen = True
-                    log_file("rbds.log", "RT+ with song tags seen: logging artist and title")
-                if item != self.current_plus:
-                    self.current_plus = item
-                    self._add(now, "plus", item)
         if "radiotext" in data:
             text = _clean_rds_text(data["radiotext"])
-            if text and text != self.current_rt:
-                self.current_rt = text
-                self._add(now, "rt", text)
+            if text and text != self.current:
+                self.current = text
+                self.pending.append((now, text))
         return self._flush(now)
 
     def finish(self, now):
