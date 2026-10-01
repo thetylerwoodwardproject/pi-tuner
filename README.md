@@ -344,9 +344,28 @@ For example:
 - Recording runs beside the stream and can't interrupt it. If the disk fills or
   the encoder fails, the problem is logged to `recordings.log` and the stream
   keeps playing. WX stations record the same mono audio that they stream.
+- **RBDS.log (FM only).** If a station has both `RBDS=true` and `RECORD=true`,
+  Pi-Tuner also keeps a text log of the now-playing text in that day's folder:
+
+  ```
+  /opt/pituner/recordings/STATION_NAME/YYYY/MM/DD/RBDS.log
+  ```
+
+  ```
+  261001 09:21:15: Metallica - Enter Sandman (WXTB)
+  261001 09:23:16: Avenged Sevenfold - Bat Country (WXTB)
+  ```
+
+  Each line is `YYMMDD HH:MM:SS: text (PS)`, in the Pi's local time, appended
+  as the text changes. A new file starts every day. WX stations don't have one.
+  Many stations rotate their RadioText between the song and slogans or phone
+  numbers, so each text is logged once and not again until it has been gone for
+  an hour. If a station sends RadioText Plus (tagged artist and title), the log
+  uses that instead, which leaves slogans and ads out entirely. A slogan can
+  still be logged once the first time it appears after a start or restart.
 - **Plan for disk space.** Each station uses about 1.4 GB a day (58 MB an hour).
-  Set `RECORD_KEEP_DAYS=14` in the station file to delete files older than 14
-  days (and any empty date folders). Pi-Tuner checks hourly. Leave it out to
+  Set `RECORD_KEEP_DAYS=14` in the station file to delete files (and `RBDS.log`s)
+  older than 14 days, plus any empty date folders. Pi-Tuner checks hourly. Leave it out to
   keep everything.
 
 ## Troubleshooting
@@ -361,6 +380,7 @@ For example:
 | No now-playing text              | `which redsea`, then `tail /var/www/pituner/rbds.log` |
 | FM genre is just `Radio`         | No PTY heard; check `journalctl -u pituner` for `RBDS PTY:` |
 | No recordings                    | `RECORD=true` set and reloaded? `tail /var/www/pituner/recordings.log`; `df -h` |
+| No `RBDS.log`                    | FM station with both `RBDS=true` and `RECORD=true`? Is `redsea` installed? |
 
 The service automatically restarts any station whose pipeline dies (dongle
 unplugged, Icecast unreachable, decode failure), backing off between attempts.

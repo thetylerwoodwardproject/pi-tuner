@@ -23,9 +23,10 @@ Usage:
              record raw s16le PCM from stdin to 128 kbps MP3 files, one per
              15 minutes, under <dir>/recordings/<name>/YYYY/MM/DD/.
 
-    tuner.py rbds-meta --dir /opt/pituner <mount>
+    tuner.py rbds-meta --dir /opt/pituner [--log-name NAME] <mount>
              read redsea JSON lines from stdin and push the decoded RBDS
-             text to the Icecast now-playing metadata for <mount>.
+             text to the Icecast now-playing metadata for <mount>. With
+             --log-name, also append it to the station's daily RBDS.log.
 """
 import argparse
 import base64
@@ -56,6 +57,8 @@ FM_DEFAULT_GENRE = "Radio"
 REC_CHUNK_SECS = 900
 REC_RETRY_SECS = 30
 REC_PRUNE_SECS = 3600
+RBDS_LOG_FILE = "RBDS.log"
+RBDS_LOG_GAP_SECS = 3600
 PTY_SCAN_SECS = 8.0
 
 # ------------------------------------------------------------------- logging
@@ -147,10 +150,13 @@ def _record_tee(name, sample_rate, channels, base_dir):
             f'--dir "{base_dir}" "{name}" {sample_rate} {channels})')
 
 
-def _rbds_tee(mount, base_dir):
-    """Return the pipeline fragment that taps the 192 kHz MPX to RBDS decoding."""
+def _rbds_tee(mount, base_dir, log_name=None):
+    """Return the pipeline fragment that taps the 192 kHz MPX to RBDS decoding.
+
+    ``log_name`` (a station name) also writes the daily RBDS.log."""
+    log_arg = f' --log-name "{log_name}"' if log_name else ""
     return (f"tee --output-error=warn >(redsea -u -r 192000 2>/dev/null | "
-            f'python3 {TUNER_PATH} rbds-meta --dir "{base_dir}" "{mount}")')
+            f'python3 {TUNER_PATH} rbds-meta --dir "{base_dir}"{log_arg} "{mount}")')
 
 
 # --------------------------------------------------------- device resolution
@@ -287,7 +293,8 @@ def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
 
     cmd = _fm_source(cfg, device_index)
     if rbds and cfg.get("rbds"):
-        cmd += f" | {_rbds_tee(cfg['mount'], eas_dir)}"
+        log_name = name if record else None
+        cmd += f" | {_rbds_tee(cfg['mount'], eas_dir, log_name)}"
     cmd += " | demux -r 192000 -R 48000 -d 75"
     if record:
         cmd += f" | {_record_tee(name, 48000, 2, eas_dir)}"
@@ -603,8 +610,8 @@ def run_recorder(base_dir, name, rate, channels, stream=None,
 
 
 def prune_recordings(base_dir, name, keep_days, now=None):
-    """Delete a station's MP3s older than ``keep_days`` and any emptied date
-    folders. Returns the number of files removed. ``keep_days`` 0 does nothing."""
+    """Delete a station's MP3s and RBDS.logs older than ``keep_days`` and any
+    emptied date folders. Returns the number of files removed. ``keep_days`` 0 does nothing."""
     if keep_days <= 0:
         return 0
     now = time.time() if now is None else now
@@ -615,7 +622,8 @@ def prune_recordings(base_dir, name, keep_days, now=None):
         for fname in files:
             path = os.path.join(dirpath, fname)
             try:
-                if fname.endswith(".mp3") and os.path.getmtime(path) < cutoff:
+                if (fname.endswith(".mp3") or fname == RBDS_LOG_FILE) \
+                        and os.path.getmtime(path) < cutoff:
                     os.remove(path)
                     removed += 1
             except OSError:
@@ -665,11 +673,111 @@ def update_icecast_metadata(ice, mount, song):
         return False
 
 
-def run_rbds_meta(base_dir, mount, stream=None, updater=update_icecast_metadata):
+def rbds_log_path(base_dir, name, when):
+    """recordings/NAME/YYYY/MM/DD/RBDS.log for a time (epoch seconds, local)."""
+    t = datetime.datetime.fromtimestamp(when)
+    return os.path.join(recording_dir(base_dir, name), t.strftime("%Y"),
+                        t.strftime("%m"), t.strftime("%d"), RBDS_LOG_FILE)
+
+
+_RBDS_LOG_LINE_RE = re.compile(r"^(\d{6} \d{2}:\d{2}:\d{2}): (.*)$")
+_PS_SUFFIX_RE = re.compile(r" \([^()]{1,8}\)$")
+
+
+class RbdsLogger:
+    """Decide which RBDS now-playing texts belong in the daily RBDS.log.
+
+    Stations that send RadioText Plus are logged from its tagged artist and
+    title, so slogans and ads never appear. For plain RadioText, a text is
+    logged when first seen and then not again until it has been absent for
+    RBDS_LOG_GAP_SECS, so a station that rotates song, slogan, song, slogan
+    logs each text once instead of on every flip.
+    """
+
+    def __init__(self, gap_secs=RBDS_LOG_GAP_SECS):
+        self.gap = gap_secs
+        self.ps = ""
+        self.rtplus = False   # station sends RT+: ignore plain RadioText
+        self.last_seen = {}   # text (without the PS suffix) -> last time seen
+        self.current = None
+
+    def seed(self, lines, now):
+        """Prime history from existing log lines so a restart doesn't re-log."""
+        for line in lines:
+            m = _RBDS_LOG_LINE_RE.match(line.strip())
+            if not m:
+                continue
+            try:
+                when = time.mktime(time.strptime(m.group(1), "%y%m%d %H:%M:%S"))
+            except ValueError:
+                continue
+            if now - when < self.gap:
+                text = _PS_SUFFIX_RE.sub("", m.group(2))
+                self.last_seen[text] = max(self.last_seen.get(text, 0.0), when)
+                self.current = text
+
+    def _rtplus_text(self, plus):
+        tags = {}
+        for tag in plus.get("tags", []):
+            if isinstance(tag, dict):
+                tags[tag.get("content-type")] = _clean_rds_text(tag.get("data"))
+        title = tags.get("item.title", "")
+        if not plus.get("item_running", True) or not title:
+            return ""
+        artist = tags.get("item.artist") or tags.get("item.band") or ""
+        return f"{artist} - {title}" if artist else title
+
+    def feed(self, data, now):
+        """Take one redsea JSON dict; return a log line, or None."""
+        if "ps" in data:
+            self.ps = _clean_rds_text(data["ps"])
+        text = ""
+        if isinstance(data.get("radiotext_plus"), dict):
+            self.rtplus = True
+            text = self._rtplus_text(data["radiotext_plus"])
+        elif "radiotext" in data and not self.rtplus:
+            text = _clean_rds_text(data["radiotext"])
+        if not text:
+            return None
+        previous = self.last_seen.get(text)
+        self.last_seen[text] = now
+        if text == self.current:
+            return None
+        self.current = text
+        if previous is not None and now - previous < self.gap:
+            return None  # a rotation coming back
+        shown = f"{text} ({self.ps})" if self.ps else text
+        stamp = time.strftime("%y%m%d %H:%M:%S", time.localtime(now))
+        return f"{stamp}: {shown}"
+
+
+def _read_rbds_log_tail(base_dir, name, now):
+    try:
+        with open(rbds_log_path(base_dir, name, now), encoding="utf-8",
+                  errors="replace") as f:
+            return f.read().splitlines()[-200:]
+    except OSError:
+        return []
+
+
+def _append_rbds_log(base_dir, name, now, line):
+    path = rbds_log_path(base_dir, name, now)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "a", encoding="utf-8") as f:
+            f.write(line + "\n")
+    except OSError as e:
+        log_file("recordings.log", f"{path}: cannot write RBDS log: {e}")
+
+
+def run_rbds_meta(base_dir, mount, stream=None, updater=update_icecast_metadata,
+                  log_name=None, clock=time.time):
     """Read redsea JSON lines from stdin and keep Icecast's now-playing current.
 
     Best-effort: bad lines and HTTP errors are ignored, and stdin is always
     drained so the audio pipeline is never stalled. Exits cleanly on EOF.
+    With ``log_name`` the decoded text is also appended to that station's
+    daily RBDS.log (independent of whether the Icecast update succeeds).
     """
     stream = stream if stream is not None else sys.stdin
     conf = parse_keyvalue(os.path.join(base_dir, "icecast.conf"))
@@ -682,6 +790,11 @@ def run_rbds_meta(base_dir, mount, stream=None, updater=update_icecast_metadata)
     }
     state = {}
     last_sent = None
+    logger = None
+    if log_name:
+        logger = RbdsLogger()
+        started = clock()
+        logger.seed(_read_rbds_log_tail(base_dir, log_name, started), started)
     for line in stream:
         try:
             data = json.loads(line)
@@ -689,6 +802,11 @@ def run_rbds_meta(base_dir, mount, stream=None, updater=update_icecast_metadata)
             continue
         if not isinstance(data, dict):
             continue
+        if logger is not None:
+            now = clock()
+            entry = logger.feed(data, now)
+            if entry:
+                _append_rbds_log(base_dir, log_name, now, entry)
         for key in ("ps", "radiotext"):
             if key in data:
                 state[key] = _clean_rds_text(data[key])
@@ -1037,9 +1155,11 @@ def _main_record(argv):
 def _main_rbds_meta(argv):
     parser = argparse.ArgumentParser(prog="tuner.py rbds-meta")
     parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
+    parser.add_argument("--log-name", default=None,
+                        help="station name: also append to its daily RBDS.log")
     parser.add_argument("mount", help="Icecast mount point, e.g. /tuner1")
     args = parser.parse_args(argv)
-    run_rbds_meta(args.dir, args.mount)
+    run_rbds_meta(args.dir, args.mount, log_name=args.log_name)
     return 0
 
 
