@@ -43,31 +43,31 @@ systemd keeps running.
 
 <table>
   <tr>
-    <td width="260">📻&nbsp;<b>FM and weather radio</b></td>
+    <td>📻&nbsp;<b>FM&nbsp;and&nbsp;weather&nbsp;radio</b></td>
     <td>Stereo FM, plus NOAA Weather Radio in mono</td>
   </tr>
   <tr>
-    <td width="260">🔊&nbsp;<b>Icecast streaming</b></td>
+    <td>🔊&nbsp;<b>Icecast&nbsp;streaming</b></td>
     <td>Every station is a 128k MP3 stream on its own mount: <code>/tuner1</code>, <code>/tuner2</code>…</td>
   </tr>
   <tr>
-    <td width="260">🏷️&nbsp;<b>RBDS now-playing</b></td>
+    <td>🏷️&nbsp;<b>RBDS&nbsp;now-playing</b></td>
     <td>Decodes RadioText and the station name and shows <code>Artist - Title (PS)</code> in Icecast. The station's program type (PTY) becomes the genre (<code>Radio</code> if none), and WX streams get <code>Weather</code></td>
   </tr>
   <tr>
-    <td width="260">♻️&nbsp;<b>Self-healing</b></td>
+    <td>♻️&nbsp;<b>Self-healing</b></td>
     <td>If a dongle is unplugged or a stream dies, that station restarts automatically, with backoff</td>
   </tr>
   <tr>
-    <td width="260">🚨&nbsp;<b>EAS tone detection</b></td>
+    <td>🚨&nbsp;<b>EAS&nbsp;tone&nbsp;detection</b></td>
     <td>Listens for the 853 + 960 Hz attention tone and alerts you through Zabbix</td>
   </tr>
   <tr>
-    <td width="260">📟&nbsp;<b>Zabbix alerts</b></td>
+    <td>📟&nbsp;<b>Zabbix&nbsp;alerts</b></td>
     <td>Optional status heartbeat and events, with no agent on the Pi</td>
   </tr>
   <tr>
-    <td width="260">🧰&nbsp;<b>One-line installer</b></td>
+    <td>🧰&nbsp;<b>One-line&nbsp;installer</b></td>
     <td>Installs packages, builds the decoders, configures Icecast and walks you through your first stations</td>
   </tr>
 </table>
