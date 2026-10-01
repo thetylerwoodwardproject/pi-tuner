@@ -461,7 +461,7 @@ fi
 chown -R pituner:pituner "${APP_DIR}/stations"
 
 # ------------------------------------------------------------- zabbix
-step "7 of 8: Zabbix alerts (optional)"
+step "7 of 8: Zabbix and email alerts (optional)"
 ZABBIX_ENABLED="false"
 if [ "${INTERACTIVE}" = "1" ] && confirm "Enable Zabbix trapper alerts now?"; then
   server=$(ask "  Zabbix server address" "zabbix.internal.example.com")
@@ -504,6 +504,73 @@ EOF
   chown pituner:pituner "${APP_DIR}/zabbix.conf"
   chmod 600 "${APP_DIR}/zabbix.conf"
   info "Zabbix skipped. You can enable it later by editing ${APP_DIR}/zabbix.conf."
+fi
+
+# ------------------------------------------------------------- email
+EMAIL_ENABLED="false"
+smtp_to=""
+if [ "${INTERACTIVE}" = "1" ] && confirm "Enable SMTP email alerts now?"; then
+  smtp_host=$(ask "  SMTP server (e.g. smtp.example.com)" "")
+  smtp_port=$(ask "  SMTP port" "587")
+  smtp_sec=$(ask "  Security (starttls, ssl or none)" "starttls")
+  case "${smtp_sec}" in
+    starttls|ssl|none) ;;
+    *) warn "Unknown security '${smtp_sec}', using starttls."; smtp_sec="starttls" ;;
+  esac
+  smtp_user=$(ask "  SMTP username (press Enter if the server needs no login)" "")
+  smtp_pass=""
+  if [ -n "${smtp_user}" ]; then
+    printf "${CYAN}[?]${RESET} %s: " "  SMTP password (hidden)" >&2
+    read -r -s smtp_pass
+    echo "" >&2
+  fi
+  smtp_from=$(ask "  From address" "pituner@$(hostname)")
+  smtp_to=$(ask "  Send alerts to (comma-separated addresses)" "")
+  if [ -z "${smtp_host}" ] || [ -z "${smtp_to}" ]; then
+    warn "SMTP server and recipient are both required; email alerts left disabled."
+    install -m 600 "${SRC}/smtp.conf" "${APP_DIR}/smtp.conf"
+  else
+    cat > "${APP_DIR}/smtp.conf" <<EOF
+# Pi-Tuner SMTP email alerts. Keep this file mode 600: it holds the password.
+# ─── user settings ─────────────────────────────────
+ENABLED=true
+HOST=${smtp_host}
+PORT=${smtp_port}
+SECURITY=${smtp_sec}
+VERIFY_TLS=true
+USERNAME=${smtp_user}
+PASSWORD=${smtp_pass}
+FROM=${smtp_from}
+TO=${smtp_to}
+SUBJECT_PREFIX=[Pi-Tuner]
+TIMEOUT=10
+ALERT_STATION=true
+ALERT_EAS=true
+ALERT_DISK=true
+ALERT_SERVICE=true
+DOWN_DELAY=120
+DISK_MIN_GB=2
+# ─── end user settings ─────────────────────────────
+EOF
+    EMAIL_ENABLED="true"
+  fi
+  chown pituner:pituner "${APP_DIR}/smtp.conf"
+  chmod 600 "${APP_DIR}/smtp.conf"
+  if [ "${EMAIL_ENABLED}" = "true" ]; then
+    ok "Email alerts configured (${APP_DIR}/smtp.conf)."
+    if confirm "  Send a test email now?"; then
+      if python3 "${APP_DIR}/tuner.py" test-email --dir "${APP_DIR}"; then
+        ok "Test email sent. Check ${smtp_to}."
+      else
+        warn "The test email failed. Fix ${APP_DIR}/smtp.conf and retry with:"
+        warn "  sudo python3 ${APP_DIR}/tuner.py test-email --dir ${APP_DIR}"
+      fi
+    fi
+  fi
+else
+  install -m 600 "${SRC}/smtp.conf" "${APP_DIR}/smtp.conf"
+  chown pituner:pituner "${APP_DIR}/smtp.conf"
+  info "Email alerts skipped. You can enable them later by editing ${APP_DIR}/smtp.conf."
 fi
 
 # ------------------------------------------------------------- service
@@ -575,5 +642,8 @@ echo "  Icecast admin password: ${ADMIN_PASS}"
 echo "  Icecast source password (also in icecast.conf): ${SOURCE_PASS}"
 if [ "${ZABBIX_ENABLED}" = "true" ]; then
   echo "  Zabbix: import ${APP_DIR}/zabbix_template.xml and attach it to your host."
+fi
+if [ "${EMAIL_ENABLED}" = "true" ]; then
+  echo "  Email alerts go to ${smtp_to}. Test: sudo python3 ${APP_DIR}/tuner.py test-email --dir ${APP_DIR}"
 fi
 echo ""

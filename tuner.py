@@ -23,6 +23,9 @@ Usage:
              record raw s16le PCM from stdin to 128 kbps MP3 files, one per
              15 minutes, under <dir>/recordings/<name>/YYYY/MM/DD/.
 
+    tuner.py test-email --dir /opt/pituner [--to ADDRESS]
+             send one test message using smtp.conf and report any SMTP error.
+
     tuner.py rbds-meta --dir /opt/pituner [--log-name NAME] <mount>
              read redsea JSON lines from stdin and push the decoded RBDS
              text to the Icecast now-playing metadata for <mount>. With
@@ -31,6 +34,8 @@ Usage:
 import argparse
 import base64
 import datetime
+import email.message
+import email.utils
 import json
 import math
 import os
@@ -39,7 +44,9 @@ import re
 import select
 import shutil
 import signal
+import smtplib
 import socket
+import ssl
 import struct
 import subprocess
 import sys
@@ -387,6 +394,248 @@ class ZabbixSender:
         ], mirror=False)
 
 
+# ------------------------------------------------------------- email alerts
+
+def _fmt_duration(seconds):
+    seconds = int(max(0, seconds))
+    h, rem = divmod(seconds, 3600)
+    m, sec = divmod(rem, 60)
+    if h:
+        return f"{h}h {m}m"
+    if m:
+        return f"{m}m {sec}s"
+    return f"{sec}s"
+
+
+def _conf_flag(conf, key, default):
+    value = conf.get(key)
+    return default if value is None else _parse_bool(value)
+
+
+def _conf_number(conf, key, default, cast=int):
+    try:
+        return cast(conf.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+class Mailer:
+    """SMTP client for alert emails, stdlib only.
+
+    ``send`` queues the message for a background worker thread, so a slow or
+    dead mail server can never stall the supervisor loop or an audio pipeline.
+    Failures are logged to email.log (never the password) and otherwise
+    ignored. ``send_sync`` delivers immediately and raises, for test-email.
+    """
+
+    ATTEMPT_DELAYS = (2.0, 5.0)  # waits between the 3 delivery attempts
+
+    def __init__(self, conf):
+        self.flag = _parse_bool(conf.get("enabled"))
+        self.host = conf.get("host", "").strip()
+        self.port = _conf_number(conf, "port", 587)
+        security = conf.get("security", "starttls").strip().lower()
+        self.security = security if security in ("starttls", "ssl", "none") else "starttls"
+        self.verify_tls = _conf_flag(conf, "verify_tls", True)
+        self.username = conf.get("username", "")
+        self.password = conf.get("password", "")
+        self.hostname = socket.gethostname()
+        self.from_addr = conf.get("from", "").strip() or f"pituner@{self.hostname}"
+        self.to = [a for a in re.split(r"[,;\s]+", conf.get("to", "")) if a]
+        self.prefix = conf.get("subject_prefix", "[Pi-Tuner]").strip()
+        self.timeout = max(1, _conf_number(conf, "timeout", 10))
+        self.alert_station = _conf_flag(conf, "alert_station", True)
+        self.alert_eas = _conf_flag(conf, "alert_eas", True)
+        self.alert_disk = _conf_flag(conf, "alert_disk", True)
+        self.alert_service = _conf_flag(conf, "alert_service", True)
+        self.down_delay = max(0, _conf_number(conf, "down_delay", 120))
+        self.disk_min_gb = max(0.0, _conf_number(conf, "disk_min_gb", 2.0, float))
+        self._queue = queue.Queue(maxsize=50)
+        self._worker = None
+        self._lock = threading.Lock()
+
+    @property
+    def enabled(self):
+        return self.flag and bool(self.host) and bool(self.to)
+
+    def problem(self):
+        """Why email isn't active, or "" if it is."""
+        if not self.flag:
+            return "ENABLED is not true"
+        if not self.host:
+            return "HOST is empty"
+        if not self.to:
+            return "TO has no recipients"
+        return ""
+
+    def build(self, subject, body):
+        msg = email.message.EmailMessage()
+        msg["From"] = self.from_addr
+        msg["To"] = ", ".join(self.to)
+        msg["Subject"] = f"{self.prefix} {subject} ({self.hostname})".strip()
+        msg["Date"] = email.utils.formatdate(localtime=True)
+        msg["Message-ID"] = email.utils.make_msgid(domain=self.hostname)
+        msg.set_content(body.rstrip() + "\n")
+        return msg
+
+    def _deliver(self, msg):
+        context = ssl.create_default_context()
+        if not self.verify_tls:
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+        if self.security == "ssl":
+            smtp = smtplib.SMTP_SSL(self.host, self.port, local_hostname=self.hostname,
+                                    timeout=self.timeout, context=context)
+        else:
+            smtp = smtplib.SMTP(self.host, self.port, local_hostname=self.hostname,
+                                timeout=self.timeout)
+        with smtp:
+            smtp.ehlo()
+            if self.security == "starttls":
+                smtp.starttls(context=context)
+                smtp.ehlo()
+            if self.username:
+                smtp.login(self.username, self.password)
+            smtp.send_message(msg)
+
+    def send_sync(self, subject, body):
+        """Deliver now; raises on failure."""
+        self._deliver(self.build(subject, body))
+
+    def _run(self):
+        while True:
+            msg = self._queue.get()
+            subject = msg["Subject"]
+            try:
+                for attempt in range(len(self.ATTEMPT_DELAYS) + 1):
+                    try:
+                        self._deliver(msg)
+                        log_file("email.log", f"sent: {subject}")
+                        break
+                    except Exception as e:  # noqa: BLE001 - alerts are best effort
+                        last = f"{type(e).__name__}: {e}"
+                        if attempt < len(self.ATTEMPT_DELAYS):
+                            time.sleep(self.ATTEMPT_DELAYS[attempt])
+                        else:
+                            log_file("email.log", f"FAILED ({last}): {subject}")
+                            log(f"email send failed: {last}", err=True)
+            finally:
+                self._queue.task_done()
+
+    def send(self, subject, body):
+        """Queue an email without blocking. No-op when email isn't enabled."""
+        if not self.enabled:
+            return
+        with self._lock:
+            if self._worker is None:
+                self._worker = threading.Thread(target=self._run, daemon=True)
+                self._worker.start()
+        try:
+            self._queue.put_nowait(self.build(subject, body))
+        except queue.Full:
+            log_file("email.log", f"queue full, dropped: {subject}")
+
+    def flush(self, timeout=10.0):
+        """Wait up to ``timeout`` seconds for queued emails to go out."""
+        deadline = time.time() + timeout
+        while self._queue.unfinished_tasks and time.time() < deadline:
+            time.sleep(0.1)
+
+
+class AlertManager:
+    """Decides when to email about stations, disk space and the service.
+
+    A station that goes down only triggers an email once it has stayed down for
+    the mailer's down_delay; a recovery email follows only if the down email was
+    sent, so brief self-healing blips send nothing.
+    """
+
+    DISK_CHECK_SECS = 300
+    DISK_RECOVER_FACTOR = 1.25
+
+    def __init__(self, mailer=None, disk_usage=shutil.disk_usage):
+        self.mailer = mailer or Mailer({})
+        self.disk_usage = disk_usage
+        self.stations = {}   # name -> {"status", "detail", "since", "alerted"}
+        self.disk_low = False
+        self._next_disk = 0.0
+
+    def sync_stations(self, names):
+        """Forget stations that no longer exist after a config reload."""
+        for name in list(self.stations):
+            if name not in names:
+                del self.stations[name]
+
+    def station_status(self, name, status, detail, now):
+        if not (self.mailer.enabled and self.mailer.alert_station):
+            return
+        rec = self.stations.get(name)
+        if status == "streaming":
+            if rec is not None and rec["alerted"]:
+                self.mailer.send(
+                    f"{name} is back up",
+                    f"Station {name} is streaming again.\n\n"
+                    f"It was down for {_fmt_duration(now - rec['since'])}.\n"
+                    f"Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}")
+            self.stations.pop(name, None)
+        elif status in ("down", "serial_not_found"):
+            if rec is None:
+                self.stations[name] = {"status": status, "detail": detail,
+                                       "since": now, "alerted": False}
+            else:
+                rec["status"], rec["detail"] = status, detail
+
+    def tick(self, now):
+        """Send the delayed 'down' emails that are due."""
+        if not (self.mailer.enabled and self.mailer.alert_station):
+            return
+        for name, rec in self.stations.items():
+            if not rec["alerted"] and now - rec["since"] >= self.mailer.down_delay:
+                rec["alerted"] = True
+                what = ("its dongle serial was not found" if rec["status"] == "serial_not_found"
+                        else "its stream stopped")
+                self.mailer.send(
+                    f"{name} is DOWN",
+                    f"Station {name} has been down for {_fmt_duration(now - rec['since'])}: "
+                    f"{what}.\n"
+                    + (f"Detail: {rec['detail']}\n" if rec["detail"] else "")
+                    + f"Down since: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(rec['since']))}\n\n"
+                    "Check the log with: journalctl -u pituner -n 50")
+
+    def check_disk(self, now, path, recording):
+        """Email when free space under ``path`` drops below the threshold."""
+        m = self.mailer
+        if not (m.enabled and m.alert_disk and recording) or now < self._next_disk:
+            return
+        self._next_disk = now + self.DISK_CHECK_SECS
+        try:
+            free_gb = self.disk_usage(path).free / 1024 ** 3
+        except OSError:
+            return
+        if not self.disk_low and free_gb < m.disk_min_gb:
+            self.disk_low = True
+            m.send("Low disk space",
+                   f"Only {free_gb:.1f} GB is free where Pi-Tuner stores recordings ({path}).\n"
+                   f"The alert level is {m.disk_min_gb:g} GB. Recording will fail when the "
+                   "disk is full; delete old recordings or set RECORD_KEEP_DAYS in a station file.")
+        elif self.disk_low and free_gb >= m.disk_min_gb * self.DISK_RECOVER_FACTOR:
+            self.disk_low = False
+            m.send("Disk space recovered",
+                   f"{free_gb:.1f} GB is free again where Pi-Tuner stores recordings ({path}).")
+
+    def service_started(self, statuses):
+        m = self.mailer
+        if m.enabled and m.alert_service:
+            lines = "\n".join(f"  {n}: {s}" for n, s in statuses.items()) or "  (no stations configured)"
+            m.send("Pi-Tuner started", f"Pi-Tuner started with {len(statuses)} station(s):\n{lines}")
+
+    def service_stopped(self):
+        m = self.mailer
+        if m.enabled and m.alert_service:
+            m.send("Pi-Tuner stopped", "Pi-Tuner is shutting down (service stop, restart or reboot).")
+            m.flush(6.0)
+
+
 # ------------------------------------------------- EAS attention-tone detection
 # The EAS/SAME attention signal is a simultaneous 853 Hz + 960 Hz dual-tone.
 # We detect it with a Goertzel filter over short windows and pulse a Zabbix
@@ -439,6 +688,7 @@ def run_eas_detector(base_dir, name, sample_rate, channels):
     process exits cleanly on stdin EOF, never stalling the audio pipeline.
     """
     zbx = ZabbixSender(parse_keyvalue(os.path.join(base_dir, "zabbix.conf")))
+    mailer = Mailer(parse_keyvalue(os.path.join(base_dir, "smtp.conf")))
     block = int(sample_rate * EAS_WINDOW_SECS)
     chunk = block * 2 * channels  # bytes per window (2 bytes per sample)
     hits = 0
@@ -454,7 +704,8 @@ def run_eas_detector(base_dir, name, sample_rate, channels):
             samples = samples[0::2]  # left channel (attention tone is mono)
         now = time.time()
         if pulsing and now - pulse_start >= EAS_HOLD_SECS:
-            zbx.send([(zbx.key_eas, 0)])
+            if zbx.enabled:
+                zbx.send([(zbx.key_eas, 0)])
             pulsing = False
             cooldown_until = now + EAS_COOLDOWN_SECS
         if pulsing or now < cooldown_until:
@@ -469,15 +720,23 @@ def run_eas_detector(base_dir, name, sample_rate, channels):
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}",
                   file=sys.stderr, flush=True)
             log_file("eas.log", msg)
-            zbx.send([
-                (zbx.key_eas, 1),
-                (zbx.key_event, msg),
-            ])
+            if zbx.enabled:
+                zbx.send([
+                    (zbx.key_eas, 1),
+                    (zbx.key_event, msg),
+                ])
+            if mailer.alert_eas:
+                mailer.send(
+                    f"EAS attention tone heard on {name}",
+                    f"The EAS attention tone (853 Hz + 960 Hz) was detected on {name} at "
+                    f"{time.strftime('%Y-%m-%d %H:%M:%S')}.\n\n"
+                    "This is tone detection only; Pi-Tuner does not decode the SAME message.")
             pulsing = True
             pulse_start = now
             hits = 0
-    if pulsing:  # pipeline ended mid-pulse: don't leave the item stuck at 1
+    if pulsing and zbx.enabled:  # pipeline ended mid-pulse: don't leave the item stuck at 1
         zbx.send([(zbx.key_eas, 0)])
+    mailer.flush(10.0)
 
 
 # --------------------------------------------------------------- recording
@@ -950,6 +1209,8 @@ class Tuner:
         self.dir = base_dir
         self.ice = {"host": "localhost", "port": "8000", "password": "hackme"}
         self.zbx = ZabbixSender({})
+        self.mailer = Mailer({})
+        self.alerts = AlertManager(self.mailer)
         self.eas_enabled = False
         self.stations = []
         self.devices = []
@@ -972,9 +1233,13 @@ class Tuner:
         zbx = parse_keyvalue(os.path.join(self.dir, "zabbix.conf"))
         self.zbx = ZabbixSender(zbx)
         eas_on = str(zbx.get("eas_detect", "false")).lower() in ("1", "true", "yes", "on")
-        self.eas_enabled = eas_on and self.zbx.enabled
+        self.mailer = Mailer(parse_keyvalue(os.path.join(self.dir, "smtp.conf")))
+        self.alerts.mailer = self.mailer
+        eas_by_email = self.mailer.enabled and self.mailer.alert_eas
+        self.eas_enabled = (eas_on and self.zbx.enabled) or eas_by_email
         self.stations = [Station(c) for c in
                          load_stations(os.path.join(self.dir, "stations"))]
+        self.alerts.sync_stations({st.name for st in self.stations})
 
     def rbds_available(self):
         """True if redsea is installed; warns once per load if not."""
@@ -1013,6 +1278,7 @@ class Tuner:
             msg += f" ({detail})"
         log(msg)
         self.zbx.event(f"station {st.name} {status}{(' ' + detail) if detail else ''}")
+        self.alerts.station_status(st.name, status, detail, time.time())
 
     def start_station(self, st):
         if not st.cfg["serial"]:
@@ -1112,6 +1378,7 @@ class Tuner:
         self._next_heartbeat = time.time() + self.zbx.interval
         next_prune = 0.0
         self.running = True
+        self.alerts.service_started({st.name: st.status for st in self.stations})
         while self.running:
             if self.reload_requested:
                 self.reload_requested = False
@@ -1119,6 +1386,9 @@ class Tuner:
                 self._next_heartbeat = time.time() + self.zbx.interval
                 continue
             self.poll()
+            now = time.time()
+            self.alerts.tick(now)
+            self.alerts.check_disk(now, self.dir, any(st.cfg.get("record") for st in self.stations))
             if time.time() >= next_prune:
                 self.prune_recordings()
                 next_prune = time.time() + REC_PRUNE_SECS
@@ -1126,6 +1396,7 @@ class Tuner:
                 self.send_heartbeat()
                 self._next_heartbeat = time.time() + self.zbx.interval
             time.sleep(1.0)
+        self.alerts.service_stopped()
         for st in self.stations:
             self.stop_station(st)
 
@@ -1147,6 +1418,12 @@ def run_check(base_dir):
     zbx_state = (f"enabled -> {tuner.zbx.server}:{tuner.zbx.port}"
                  if tuner.zbx.enabled else "disabled")
     log(f"zabbix: {zbx_state}")
+    mail = tuner.mailer
+    if mail.enabled:
+        log(f"email: {mail.host}:{mail.port} ({mail.security}) from {mail.from_addr} to "
+            f"{', '.join(mail.to)}; password {'set' if mail.password else 'not set'}")
+    else:
+        log(f"email: disabled ({mail.problem()})")
     if not tuner.devices:
         log("no RTL-SDR devices found via rtl_test", err=True)
     else:
@@ -1185,6 +1462,30 @@ def _main_detect_eas(argv):
     return 0
 
 
+def _main_test_email(argv):
+    parser = argparse.ArgumentParser(prog="tuner.py test-email")
+    parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
+    parser.add_argument("--to", default=None, help="send to this address instead of TO")
+    args = parser.parse_args(argv)
+    conf = parse_keyvalue(os.path.join(args.dir, "smtp.conf"))
+    if args.to:
+        conf["to"] = args.to
+    mailer = Mailer(conf)
+    if not mailer.enabled:
+        print(f"Email is not enabled: {mailer.problem()} (see {args.dir}/smtp.conf)")
+        return 1
+    try:
+        mailer.send_sync("Test email",
+                         "This is a test message from Pi-Tuner.\n\n"
+                         f"Sent {time.strftime('%Y-%m-%d %H:%M:%S')} via "
+                         f"{mailer.host}:{mailer.port} ({mailer.security}).")
+    except Exception as e:  # noqa: BLE001 - report any failure to the user
+        print(f"Test email FAILED: {type(e).__name__}: {e}")
+        return 1
+    print(f"Test email sent to {', '.join(mailer.to)}")
+    return 0
+
+
 def _main_record(argv):
     parser = argparse.ArgumentParser(prog="tuner.py record")
     parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
@@ -1212,6 +1513,8 @@ def main(argv=None):
         argv = sys.argv[1:]
     if argv and argv[0] == "detect-eas":
         return _main_detect_eas(argv[1:])
+    if argv and argv[0] == "test-email":
+        return _main_test_email(argv[1:])
     if argv and argv[0] == "record":
         return _main_record(argv[1:])
     if argv and argv[0] == "rbds-meta":
