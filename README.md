@@ -41,15 +41,36 @@ Icecast server where anyone on your network can listen. No web interface, no
 database: just a folder of text config files and one Python program that
 systemd keeps running.
 
-| | |
-|---|---|
-| 📻 **FM and weather radio** | Stereo FM, plus NOAA Weather Radio in mono |
-| 🔊 **Icecast streaming** | Every station is a 128k MP3 stream on its own mount: `/tuner1`, `/tuner2`… |
-| 🏷️ **RBDS now-playing** | Decodes RadioText and the station name and shows `Artist - Title (PS)` in Icecast, with the station's program type (PTY) as the genre (`Radio` if none). WX streams get the genre `Weather` |
-| ♻️ **Self-healing** | If a dongle is unplugged or a stream dies, that station restarts automatically, with backoff |
-| 🚨 **EAS tone detection** | Listens for the 853 + 960 Hz attention tone and alerts you through Zabbix |
-| 📟 **Zabbix alerts** | Optional status heartbeat and events, with no agent on the Pi |
-| 🧰 **One-line installer** | Installs packages, builds the decoders, configures Icecast and walks you through your first stations |
+<table>
+  <tr>
+    <td width="260">📻&nbsp;<b>FM and weather radio</b></td>
+    <td>Stereo FM, plus NOAA Weather Radio in mono</td>
+  </tr>
+  <tr>
+    <td width="260">🔊&nbsp;<b>Icecast streaming</b></td>
+    <td>Every station is a 128k MP3 stream on its own mount: <code>/tuner1</code>, <code>/tuner2</code>…</td>
+  </tr>
+  <tr>
+    <td width="260">🏷️&nbsp;<b>RBDS now-playing</b></td>
+    <td>Decodes RadioText and the station name and shows <code>Artist - Title (PS)</code> in Icecast. The station's program type (PTY) becomes the genre (<code>Radio</code> if none), and WX streams get <code>Weather</code></td>
+  </tr>
+  <tr>
+    <td width="260">♻️&nbsp;<b>Self-healing</b></td>
+    <td>If a dongle is unplugged or a stream dies, that station restarts automatically, with backoff</td>
+  </tr>
+  <tr>
+    <td width="260">🚨&nbsp;<b>EAS tone detection</b></td>
+    <td>Listens for the 853 + 960 Hz attention tone and alerts you through Zabbix</td>
+  </tr>
+  <tr>
+    <td width="260">📟&nbsp;<b>Zabbix alerts</b></td>
+    <td>Optional status heartbeat and events, with no agent on the Pi</td>
+  </tr>
+  <tr>
+    <td width="260">🧰&nbsp;<b>One-line installer</b></td>
+    <td>Installs packages, builds the decoders, configures Icecast and walks you through your first stations</td>
+  </tr>
+</table>
 
 ## How it works
 
