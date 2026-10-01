@@ -70,7 +70,7 @@ systemd keeps running.
   </tr>
   <tr>
     <td>📟&nbsp;<b>Zabbix&nbsp;alerts</b></td>
-    <td>Optional status heartbeat and events, with no agent on the Pi</td>
+    <td>Optional per-tuner items and alerts (state, frequency, RBDS text, audio level, EAS, recording), with no agent on the Pi</td>
   </tr>
   <tr>
     <td>✉️&nbsp;<b>Email&nbsp;alerts</b></td>
@@ -278,19 +278,60 @@ Other `pituner` commands: `pituner check` (validate the config),
 The installer fills these in for you; you normally only touch `icecast.conf` if
 you change your Icecast password later.
 
-## Zabbix alerts (optional)
+## Zabbix monitoring (optional)
 
-If you run a Zabbix server internally, Pi-Tuner can push station events and a
-status heartbeat to it (no agent needed on the Pi).
+If you run a Zabbix server internally, Pi-Tuner can push **each tuner's own
+items** and alerts to it (no agent needed on the Pi). Every station is
+discovered automatically, so adding or removing a station needs no template
+changes.
 
 1. On your Zabbix server (6.0 or newer), import `zabbix_template.xml`
    (Configuration → Templates → Import).
 2. Create a host (e.g. `pituner`) and attach the `Pi-Tuner` template.
-3. Edit `zabbix.conf` on the Pi:
+3. Edit `zabbix.conf` on the Pi (or use `sudo pituner config`):
    - `ENABLED=true`
    - `SERVER` = your Zabbix server
    - `HOSTNAME` = the host name you created in step 2
 4. `sudo systemctl restart pituner.service`
+
+**What each tuner reports.** Tuners are named by their mount, `tuner1`,
+`tuner2`, ... (the station name is in each item's name, for example
+"WLSU: audio level"):
+
+| Item (`pituner.tuner.<name>[tunerN]`) | What it is |
+|------|------|
+| `state`, `up` | streaming / down / serial_not_found / stopped, and 1 or 0 |
+| `name`, `band`, `frequency`, `mount`, `serial` | the station name, fm or wx, MHz, Icecast mount, dongle serial |
+| `genre` | the Icecast genre: the RBDS program type, `Radio`, or `Weather` |
+| `rbds.rt`, `rbds.ps` | the current RBDS RadioText and station name (PS) |
+| `eas` | 1 for about 10 seconds when the EAS attention tone is heard |
+| `level` | audio level in dBFS, one value every 10 seconds |
+| `restarts` | how many times the tuner's pipeline has restarted since the service started |
+| `recording`, `recording.age` | whether it records, and seconds since its newest recording file was written |
+
+There are also host-wide items: the last event, how many tuners are streaming,
+the heartbeat, and an "EAS on any tuner" pulse.
+
+**Triggers.** Per tuner: *is down* (not streaming for 2 minutes), *serial not
+found*, *EAS attention tone heard*, *restarting repeatedly* (3 or more restarts
+in 15 minutes), *dead air* (level below the threshold while streaming) and
+*recording stalled*. Host-wide: *heartbeat lost* and *no stations streaming*.
+Tune them with template macros on the host: `{$PITUNER.SILENCE.DB}` (default
+`-60`), `{$PITUNER.SILENCE.TIME}` (`1m`) and `{$PITUNER.REC.STALE}` (`300`
+seconds).
+
+**How it fills in.** Every `INTERVAL` seconds (default 60) Pi-Tuner sends the
+list of tuners and their values. Zabbix creates the items when it first sees
+the list, so the first values arrive on the next interval, within a couple of
+minutes. A tuner you remove from the config is deleted from Zabbix after 7
+days. Set `LEVEL_MONITOR=false` in `zabbix.conf` to stop sending audio levels
+(it also stops the small level-meter process on each station).
+
+**Updating from an older template.** The old template had a single `pituner.status`
+item holding all stations as one JSON text, and two triggers that searched
+it. They're gone. Import the new template with *Delete missing* ticked (or delete
+the old `Pi-Tuner` template first), and re-run the installer or
+`sudo pituner upgrade-config` so `zabbix.conf` gets `LEVEL_MONITOR`.
 
 Zabbix being unreachable never affects tuning: sends are best-effort and
 logged.
@@ -351,7 +392,7 @@ a simultaneous 853 Hz + 960 Hz dual-tone broadcast on FM and NOAA WX before
 emergency messages, and alert you when it's heard.
 
 Set `EAS_DETECT=true` in `zabbix.conf` (the default) for Zabbix alerts; email alerts only need `ALERT_EAS=true` in `smtp.conf` (also the default). When the tone is detected
-on any FM/WX station, the Pi pushes `pituner.eas = 1` to Zabbix, holds it for
+on any FM/WX station, the Pi pushes `pituner.eas = 1` to Zabbix (for that tuner's own `eas` item and the host-wide one), holds it for
 ~10 seconds, then resets it to `0`, so a trigger on `last()=1` fires and then
 auto-recovers. The station name is logged in `pituner.event`.
 
@@ -506,7 +547,7 @@ The Pi also keeps rotating logs on disk under `/var/www/pituner/`:
 |--------------|----------------------------------------------------------------------|
 | `tuner.log`  | Tuner health: station status changes, restarts, reloads             |
 | `eas.log`    | EAS attention-tone detections                                        |
-| `zabbix.log` | Mirror of what's sent to Zabbix (events only, not heartbeats)        |
+| `zabbix.log` | Mirror of what's sent to Zabbix (events only, not status snapshots)  |
 | `rbds.log`   | RBDS now-playing updates sent to Icecast, and any update failures    |
 | `recordings.log` | Recording problems (disk full, encoder errors)                   |
 | `email.log`  | Email alerts sent, and any delivery failures                         |

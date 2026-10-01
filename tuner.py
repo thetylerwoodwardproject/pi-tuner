@@ -36,12 +36,16 @@ Usage:
     tuner.py test-email --dir /opt/pituner [--to ADDRESS]
              send one test message using smtp.conf and report any SMTP error.
 
-    tuner.py rbds-meta --dir /opt/pituner [--log-name NAME] <mount>
+    tuner.py level --dir /opt/pituner --tuner ID <name> <rate> <channels>
+             send the audio level (dBFS) of raw s16le PCM from stdin to Zabbix.
+
+    tuner.py rbds-meta --dir /opt/pituner [--tuner ID] [--log-name NAME] <mount>
              read redsea JSON lines from stdin and push the decoded RBDS
              text to the Icecast now-playing metadata for <mount>. With
              --log-name, also append it to the station's daily RBDS.log.
 """
 import argparse
+import array
 import base64
 import datetime
 import email.message
@@ -246,12 +250,12 @@ CONFIG_KEYS = {
         ("PORT", "10051", True, "Zabbix trapper port", None),
         ("HOSTNAME", "pituner", True, "the Zabbix host the template is attached to", None),
         ("KEY_EVENT", "pituner.event", True, "item key, must match the template", None),
-        ("KEY_STATUS", "pituner.status", True, "item key, must match the template", None),
         ("KEY_ACTIVE", "pituner.stations_active", True, "item key, must match the template", None),
         ("KEY_HEARTBEAT", "pituner.heartbeat", True, "item key, must match the template", None),
         ("KEY_EAS", "pituner.eas", True, "item key, must match the template", None),
         ("INTERVAL", "60", True, "status snapshot / heartbeat interval, seconds", None),
         ("EAS_DETECT", "false", True, "true to detect the EAS attention tone", None),
+        ("LEVEL_MONITOR", "true", True, "send each tuner's audio level (dBFS) to Zabbix", None),
     ],
     "smtp.conf": [
         ("ENABLED", "false", True, "true to send email alerts", None),
@@ -428,10 +432,17 @@ def _safe_mount(text):
     return mount
 
 
-def _eas_tee(name, sample_rate, channels, eas_dir):
+def _eas_tee(name, sample_rate, channels, eas_dir, tid=""):
     """Return the pipeline fragment that taps audio to the EAS tone detector."""
+    tuner_arg = f" --tuner {tid}" if tid else ""
     return (f"tee --output-error=warn >(python3 {TUNER_PATH} detect-eas "
-            f'--dir "{eas_dir}" "{name}" {sample_rate} {channels})')
+            f'--dir "{eas_dir}"{tuner_arg} "{name}" {sample_rate} {channels})')
+
+
+def _level_tee(name, sample_rate, channels, base_dir, tid):
+    """Return the pipeline fragment that taps audio to the level meter."""
+    return (f"tee --output-error=warn >(python3 {TUNER_PATH} level "
+            f'--dir "{base_dir}" --tuner {tid} "{name}" {sample_rate} {channels})')
 
 
 def _record_tee(name, sample_rate, channels, base_dir):
@@ -446,7 +457,8 @@ def _rbds_tee(mount, base_dir, log_name=None):
     ``log_name`` (a station name) also writes the daily RBDS.log."""
     log_arg = f' --log-name "{log_name}"' if log_name else ""
     return (f"tee --output-error=warn >(redsea -u -r 192000 2>/dev/null | "
-            f'python3 {TUNER_PATH} rbds-meta --dir "{base_dir}"{log_arg} "{mount}")')
+            f'python3 {TUNER_PATH} rbds-meta --dir "{base_dir}" --tuner {tuner_id(mount)}'
+            f'{log_arg} "{mount}")')
 
 
 # --------------------------------------------------------- device resolution
@@ -554,18 +566,27 @@ def _fm_source(cfg, device_index):
             f"-F 9 -f {freq_hz}")
 
 
+def _genre_for(cfg, genre=""):
+    """Icecast genre: Weather for WX; for FM the RBDS PTY, else Radio."""
+    if cfg["band"] == "wx":
+        return WX_GENRE
+    return _safe_name(genre) or FM_DEFAULT_GENRE
+
+
 def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
-                  rbds=False, genre="", record=True):
+                  rbds=False, genre="", record=True, level=False):
     """Assemble the shell pipeline for one station.
 
     ``genre`` is the Icecast genre for FM (the RBDS PTY found at startup);
     FM falls back to "Radio" when there is none. WX is always "Weather".
-    The recorder tap is added when ``record`` and the station's RECORD are set.
+    The recorder tap is added when ``record`` and the station's RECORD are set;
+    the level-meter tap when ``level`` (Zabbix audio level) is.
     """
+    tid = tuner_id(cfg["mount"])
     record = record and bool(cfg.get("record"))
     freq_hz = int(cfg["freq"] * 1_000_000)
     name = _safe_name(cfg["name"])
-    genre = WX_GENRE if cfg["band"] == "wx" else (_safe_name(genre) or FM_DEFAULT_GENRE)
+    genre = _genre_for(cfg, genre)
     ice_url = (f"icecast://source:{ice['password']}@{ice['host']}:"
                f"{ice['port']}{cfg['mount']}")
     ffmpeg = ("-nostdin -loglevel warning -acodec libmp3lame -b:a 128k -f mp3 "
@@ -577,8 +598,10 @@ def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
         cmd = f"rtl_fm -d {device_index} -f {freq_hz} -s 25000 -E deemp -F 9"
         if record:
             cmd += f" | {_record_tee(name, 25000, 1, eas_dir)}"
+        if level:
+            cmd += f" | {_level_tee(name, 25000, 1, eas_dir, tid)}"
         if eas:
-            cmd += f" | {_eas_tee(name, 25000, 1, eas_dir)}"
+            cmd += f" | {_eas_tee(name, 25000, 1, eas_dir, tid)}"
         return cmd + f" | ffmpeg -f s16le -ar 25000 -ac 1 -i pipe:0 {ffmpeg}"
 
     cmd = _fm_source(cfg, device_index)
@@ -588,8 +611,10 @@ def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
     cmd += " | demux -r 192000 -R 48000 -d 75"
     if record:
         cmd += f" | {_record_tee(name, 48000, 2, eas_dir)}"
+    if level:
+        cmd += f" | {_level_tee(name, 48000, 2, eas_dir, tid)}"
     if eas:
-        cmd += f" | {_eas_tee(name, 48000, 2, eas_dir)}"
+        cmd += f" | {_eas_tee(name, 48000, 2, eas_dir, tid)}"
     return cmd + f" | ffmpeg -f s16le -ar 48000 -ac 2 -i pipe:0 {ffmpeg}"
 
 
@@ -605,12 +630,64 @@ def _recv_exact(sock, nbytes):
     return buf
 
 
+def tuner_id(mount):
+    """Safe per-tuner id for Zabbix item keys, derived from the mount
+    ('/tuner3' -> 'tuner3'). Mounts only contain [A-Za-z0-9/._-]."""
+    return re.sub(r"[^A-Za-z0-9._-]", "_", str(mount).strip("/")) or "tuner"
+
+
+# metric -> (value kind, description). One source for the sender, the Zabbix
+# template and the tests. Kinds: char, text, uint, float.
+TUNER_METRICS = {
+    "state": ("char", "Pipeline state: streaming, down, serial_not_found or stopped"),
+    "up": ("uint", "1 while the tuner is streaming, otherwise 0"),
+    "name": ("char", "Station name from the station file"),
+    "band": ("char", "fm or wx"),
+    "frequency": ("float", "Tuned frequency in MHz"),
+    "mount": ("char", "Icecast mount point"),
+    "serial": ("char", "Dongle serial number"),
+    "genre": ("char", "Icecast genre: the RBDS program type, Radio, or Weather"),
+    "restarts": ("uint", "Times the pipeline has been restarted since the service started"),
+    "recording": ("uint", "1 if this tuner records to disk (RECORD=true)"),
+    "recording.age": ("float", "Seconds since the newest recording file was written, -1 if none"),
+    "rbds.rt": ("text", "Current RBDS RadioText"),
+    "rbds.ps": ("char", "Current RBDS station name (PS), or the callsign for a scrolling PS"),
+    "eas": ("uint", "1 for about 10 seconds when the EAS attention tone is heard"),
+    "level": ("float", "Audio level in dBFS (RMS), averaged over 10 seconds"),
+}
+LEVEL_INTERVAL_SECS = 10
+
+
+def newest_recording_age(base_dir, name, now):
+    """Seconds since the newest .mp3 for a station was written, or -1.0.
+
+    Only today's and yesterday's day folders are looked at, so it stays cheap."""
+    newest = None
+    for days_back in (0, 1):
+        t = datetime.datetime.fromtimestamp(now) - datetime.timedelta(days=days_back)
+        folder = os.path.join(recording_dir(base_dir, name), t.strftime("%Y"),
+                              t.strftime("%m"), t.strftime("%d"))
+        try:
+            with os.scandir(folder) as it:
+                for entry in it:
+                    if entry.name.endswith(".mp3"):
+                        mtime = entry.stat().st_mtime
+                        newest = mtime if newest is None else max(newest, mtime)
+        except OSError:
+            continue
+        if newest is not None:
+            break
+    return round(now - newest, 1) if newest is not None else -1.0
+
+
 class ZabbixSender:
     """Minimal Zabbix trapper (zabbix_sender protocol) client, stdlib only.
 
     Fire-and-forget: a failed or timed-out send is logged and otherwise ignored
     so Zabbix being unreachable can never block or crash tuning.
     """
+
+    key_discovery = "pituner.tuners.discovery"
 
     def __init__(self, conf):
         self.enabled = str(conf.get("enabled", "false")).lower() in ("1", "true", "yes", "on")
@@ -621,7 +698,6 @@ class ZabbixSender:
             self.port = 10051
         self.hostname = conf.get("hostname", "") or socket.gethostname()
         self.key_event = conf.get("key_event", "pituner.event")
-        self.key_status = conf.get("key_status", "pituner.status")
         self.key_active = conf.get("key_active", "pituner.stations_active")
         self.key_heartbeat = conf.get("key_heartbeat", "pituner.heartbeat")
         self.key_eas = conf.get("key_eas", "pituner.eas")
@@ -630,10 +706,17 @@ class ZabbixSender:
         except ValueError:
             self.interval = 60
         self.interval = max(10, self.interval)
+        self.level_monitor = _conf_flag(conf, "level_monitor", True)
         self._lock = threading.Lock()
+        self._queue = queue.Queue(maxsize=200)
+        self._worker = None
 
     def _available(self):
         return self.enabled and bool(self.server)
+
+    @staticmethod
+    def tuner_key(metric, tid):
+        return f"pituner.tuner.{metric}[{tid}]"
 
     def send(self, items, mirror=True):
         """items: iterable of (key, value) pairs.
@@ -642,6 +725,7 @@ class ZabbixSender:
         local copy of everything sent to Zabbix (events only -- the periodic
         heartbeat snapshot passes mirror=False) is kept on disk.
         """
+        items = list(items)
         if mirror:
             log_file("zabbix.log", json.dumps(dict(items)))
         if not self._available():
@@ -662,17 +746,76 @@ class ZabbixSender:
         except Exception as e:  # noqa: BLE001 - best-effort send, never fatal
             log(f"zabbix send failed: {e}", err=True)
 
+    def _run(self):
+        while True:
+            items, mirror = self._queue.get()
+            try:
+                self.send(items, mirror)
+            finally:
+                self._queue.task_done()
+
+    def send_async(self, items, mirror=False):
+        """Queue a send on a background thread. For helpers whose stdin feeds an
+        audio pipeline: a slow Zabbix server must never stall them."""
+        if not self._available():
+            return
+        with self._lock:
+            if self._worker is None:
+                self._worker = threading.Thread(target=self._run, daemon=True)
+                self._worker.start()
+        try:
+            self._queue.put_nowait((list(items), mirror))
+        except queue.Full:
+            pass
+
+    def flush(self, timeout=5.0):
+        deadline = time.time() + timeout
+        while self._queue.unfinished_tasks and time.time() < deadline:
+            time.sleep(0.1)
+
     def event(self, message):
         self.send([(self.key_event, message)])
 
-    def snapshot(self, station_statuses):
-        status = {name: st for name, st in station_statuses.items()}
-        active = sum(1 for st in station_statuses.values() if st == "streaming")
-        self.send([
-            (self.key_status, json.dumps(status)),
-            (self.key_active, active),
+    # -- per-tuner items --------------------------------------------------
+
+    def state_items(self, info):
+        tid = info["id"]
+        return [(self.tuner_key("state", tid), info["state"]),
+                (self.tuner_key("up", tid), 1 if info["state"] == "streaming" else 0)]
+
+    def tuner_items(self, info):
+        """Every per-tuner value the supervisor knows (RBDS text, level and EAS
+        come from the helper processes)."""
+        tid = info["id"]
+        key = self.tuner_key
+        return self.state_items(info) + [
+            (key("name", tid), info["name"]),
+            (key("band", tid), info["band"]),
+            (key("frequency", tid), info["frequency"]),
+            (key("mount", tid), info["mount"]),
+            (key("serial", tid), info["serial"]),
+            (key("genre", tid), info["genre"]),
+            (key("restarts", tid), info["restarts"]),
+            (key("recording", tid), 1 if info["recording"] else 0),
+            (key("recording.age", tid), info["recording_age"]),
+        ]
+
+    def discovery(self, infos):
+        data = [{"{#TUNER}": i["id"], "{#NAME}": i["name"], "{#BAND}": i["band"],
+                 "{#FREQ}": str(i["frequency"]), "{#MOUNT}": i["mount"]} for i in infos]
+        return (self.key_discovery, json.dumps({"data": data}))
+
+    def snapshot(self, infos):
+        """Discovery list, every tuner's values, and the global heartbeat items,
+        in one request."""
+        items = [self.discovery(infos)]
+        for info in infos:
+            items += self.tuner_items(info)
+        items += [
+            (self.key_active, sum(1 for i in infos if i["state"] == "streaming")),
             (self.key_heartbeat, 1),
-        ], mirror=False)
+        ]
+        self.send(items, mirror=False)
 
 
 # ------------------------------------------------------------- email alerts
@@ -917,6 +1060,50 @@ class AlertManager:
             m.flush(6.0)
 
 
+# ----------------------------------------------------------- audio level meter
+
+def dbfs_from_sumsq(sumsq, count):
+    """RMS level in dBFS from a sum of squared 16-bit samples (a full-scale sine
+    is about -3 dBFS); floor -90."""
+    if count <= 0 or sumsq <= 0:
+        return -90.0
+    return round(max(-90.0, 20 * math.log10(math.sqrt(sumsq / count) / 32768.0)), 1)
+
+
+def run_level_meter(base_dir, tid, name, sample_rate, channels, stream=None,
+                    interval=LEVEL_INTERVAL_SECS, zbx=None, stride=4):
+    """Read s16le PCM from stdin and send the audio level to Zabbix.
+
+    One value per ``interval`` seconds of audio: the RMS level (dBFS) over that
+    window, measured on every ``stride``-th sample to keep the CPU cost small.
+    Sends through the background queue, so a slow Zabbix server can't stall the
+    audio pipeline this taps. Exits cleanly on stdin EOF.
+    """
+    stream = stream if stream is not None else sys.stdin.buffer
+    zbx = zbx or ZabbixSender(parse_keyvalue(os.path.join(base_dir, "zabbix.conf")))
+    key = zbx.tuner_key("level", tid)
+    chunk = int(sample_rate * 0.5) * 2 * channels
+    window = int(sample_rate * channels * interval)   # samples per value
+    sumsq = count = seen = 0
+    while True:
+        raw = stream.read(chunk)
+        if not raw:
+            break
+        raw = raw[: len(raw) // 2 * 2]
+        samples = array.array("h")
+        samples.frombytes(raw)
+        if sys.byteorder == "big":
+            samples.byteswap()
+        picked = samples[::stride]
+        sumsq += sum(x * x for x in picked)
+        count += len(picked)
+        seen += len(samples)
+        if seen >= window:
+            zbx.send_async([(key, dbfs_from_sumsq(sumsq, count))])
+            sumsq = count = seen = 0
+    zbx.flush(5.0)
+
+
 # ------------------------------------------------- EAS attention-tone detection
 # The EAS/SAME attention signal is a simultaneous 853 Hz + 960 Hz dual-tone.
 # We detect it with a Goertzel filter over short windows and pulse a Zabbix
@@ -962,7 +1149,7 @@ def _eas_tone_present(samples, sample_rate):
     return p1 > EAS_TONE_RATIO and p2 > EAS_TONE_RATIO
 
 
-def run_eas_detector(base_dir, name, sample_rate, channels):
+def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
     """Read s16le PCM from stdin and pulse a Zabbix item on the EAS tone.
 
     Best-effort and non-blocking: a missing Zabbix server is ignored and the
@@ -970,6 +1157,14 @@ def run_eas_detector(base_dir, name, sample_rate, channels):
     """
     zbx = ZabbixSender(parse_keyvalue(os.path.join(base_dir, "zabbix.conf")))
     mailer = Mailer(parse_keyvalue(os.path.join(base_dir, "smtp.conf")))
+
+    def eas_items(value):
+        """The any-tuner pulse, plus this tuner's own item."""
+        items = [(zbx.key_eas, value)]
+        if tid:
+            items.append((zbx.tuner_key("eas", tid), value))
+        return items
+
     block = int(sample_rate * EAS_WINDOW_SECS)
     chunk = block * 2 * channels  # bytes per window (2 bytes per sample)
     hits = 0
@@ -986,7 +1181,7 @@ def run_eas_detector(base_dir, name, sample_rate, channels):
         now = time.time()
         if pulsing and now - pulse_start >= EAS_HOLD_SECS:
             if zbx.enabled:
-                zbx.send([(zbx.key_eas, 0)])
+                zbx.send(eas_items(0))
             pulsing = False
             cooldown_until = now + EAS_COOLDOWN_SECS
         if pulsing or now < cooldown_until:
@@ -1002,10 +1197,7 @@ def run_eas_detector(base_dir, name, sample_rate, channels):
                   file=sys.stderr, flush=True)
             log_file("eas.log", msg)
             if zbx.enabled:
-                zbx.send([
-                    (zbx.key_eas, 1),
-                    (zbx.key_event, msg),
-                ])
+                zbx.send(eas_items(1) + [(zbx.key_event, msg)])
             if mailer.alert_eas:
                 mailer.send(
                     f"EAS attention tone heard on {name}",
@@ -1016,7 +1208,7 @@ def run_eas_detector(base_dir, name, sample_rate, channels):
             pulse_start = now
             hits = 0
     if pulsing and zbx.enabled:  # pipeline ended mid-pulse: don't leave the item stuck at 1
-        zbx.send([(zbx.key_eas, 0)])
+        zbx.send(eas_items(0))
     mailer.flush(10.0)
 
 
@@ -1348,13 +1540,15 @@ def _append_rbds_log(base_dir, name, line):
 
 
 def run_rbds_meta(base_dir, mount, stream=None, updater=update_icecast_metadata,
-                  log_name=None, clock=time.time):
+                  log_name=None, clock=time.time, zbx=None, tid=""):
     """Read redsea JSON lines from stdin and keep Icecast's now-playing current.
 
     Best-effort: bad lines and HTTP errors are ignored, and stdin is always
     drained so the audio pipeline is never stalled. Exits cleanly on EOF.
     With ``log_name`` the decoded text is also appended to that station's
-    daily RBDS.log (independent of whether the Icecast update succeeds).
+    daily RBDS.log (independent of whether the Icecast update succeeds). With
+    ``zbx`` and ``tid`` the current RadioText and PS are sent to that tuner's
+    Zabbix items when they change and again every Zabbix interval.
     """
     stream = stream if stream is not None else sys.stdin
     conf = parse_keyvalue(os.path.join(base_dir, "icecast.conf"))
@@ -1374,6 +1568,7 @@ def run_rbds_meta(base_dir, mount, stream=None, updater=update_icecast_metadata,
         started = clock()
         logger.seed(_read_rbds_log_tail(base_dir, log_name, started), started)
     now = clock()
+    last_zbx, last_zbx_at = None, 0.0
     for line in stream:
         try:
             data = json.loads(line)
@@ -1391,6 +1586,13 @@ def run_rbds_meta(base_dir, mount, stream=None, updater=update_icecast_metadata,
         decided, label = tracker.label(now)
         if not decided:
             continue
+        if zbx is not None and tid:
+            seen = (state.get("radiotext", ""), label)
+            if seen != last_zbx or now - last_zbx_at >= zbx.interval:
+                if seen != ("", ""):
+                    zbx.send_async([(zbx.tuner_key("rbds.rt", tid), seen[0]),
+                                    (zbx.tuner_key("rbds.ps", tid), seen[1])])
+                last_zbx, last_zbx_at = seen, now
         song = rbds_song(state, label)
         if not song or song == last_sent:
             continue
@@ -1400,6 +1602,8 @@ def run_rbds_meta(base_dir, mount, stream=None, updater=update_icecast_metadata,
     if logger is not None:
         for entry in logger.finish(now):
             _append_rbds_log(base_dir, log_name, entry)
+    if zbx is not None:
+        zbx.flush(5.0)
 
 
 def pty_from_json_line(line):
@@ -1481,6 +1685,8 @@ class Station:
         self.status = "stopped"   # streaming | down | serial_not_found
         self.retry_at = 0.0
         self.backoff = 2.0
+        self.restarts = 0         # pipeline deaths since the service started
+        self.genre = _genre_for(cfg)
 
 
 # ---------------------------------------------------------------- tuner
@@ -1493,6 +1699,7 @@ class Tuner:
         self.mailer = Mailer({})
         self.alerts = AlertManager(self.mailer)
         self.eas_enabled = False
+        self.level_enabled = False
         self.stations = []
         self.devices = []
         self._last_scan = 0.0
@@ -1518,6 +1725,7 @@ class Tuner:
         self.alerts.mailer = self.mailer
         eas_by_email = self.mailer.enabled and self.mailer.alert_eas
         self.eas_enabled = (eas_on and self.zbx.enabled) or eas_by_email
+        self.level_enabled = self.zbx.enabled and self.zbx.level_monitor
         self.stations = [Station(c) for c in
                          load_stations(os.path.join(self.dir, "stations"))]
         self.alerts.sync_stations({st.name for st in self.stations})
@@ -1559,6 +1767,7 @@ class Tuner:
             msg += f" ({detail})"
         log(msg)
         self.zbx.event(f"station {st.name} {status}{(' ' + detail) if detail else ''}")
+        self.zbx.send(self.zbx.state_items(self.station_info(st)), mirror=False)
         self.alerts.station_status(st.name, status, detail, time.time())
 
     def start_station(self, st):
@@ -1576,9 +1785,10 @@ class Tuner:
         if rbds:
             genre = scan_pty(st.cfg, index)
             log(f"station {st.name}: RBDS PTY: {genre or 'none heard, using ' + FM_DEFAULT_GENRE}")
+        st.genre = _genre_for(st.cfg, genre)
         cmd = build_command(st.cfg, self.ice, index,
                             eas=self.eas_enabled, eas_dir=self.dir, rbds=rbds,
-                            genre=genre)
+                            genre=genre, level=self.level_enabled)
         try:
             st.proc = subprocess.Popen(
                 cmd, shell=True, stdout=subprocess.DEVNULL,
@@ -1621,6 +1831,7 @@ class Tuner:
                 rc = st.proc.poll()
                 if rc is not None:
                     st.proc = None
+                    st.restarts += 1
                     self.set_status(st, "down", f"exit code {rc}")
                     st.retry_at = time.time() + st.backoff
                     st.backoff = min(st.backoff * 2, 60)
@@ -1636,9 +1847,26 @@ class Tuner:
                 if n:
                     log(f"station {st.name}: removed {n} recording(s) older than {days} days")
 
+    def station_info(self, st, now=None):
+        """What Zabbix is told about one tuner."""
+        now = time.time() if now is None else now
+        record = bool(st.cfg.get("record"))
+        return {
+            "id": tuner_id(st.cfg["mount"]),
+            "name": st.name,
+            "band": st.cfg["band"],
+            "frequency": st.cfg["freq"],
+            "mount": st.cfg["mount"],
+            "serial": st.cfg["serial"],
+            "state": st.status,
+            "genre": st.genre,
+            "restarts": st.restarts,
+            "recording": record,
+            "recording_age": newest_recording_age(self.dir, st.name, now) if record else -1.0,
+        }
+
     def send_heartbeat(self):
-        statuses = {st.name: st.status for st in self.stations}
-        self.zbx.snapshot(statuses)
+        self.zbx.snapshot([self.station_info(st) for st in self.stations])
 
     def reload(self):
         log("reloading config")
@@ -1740,11 +1968,12 @@ def run_check(base_dir):
 def _main_detect_eas(argv):
     parser = argparse.ArgumentParser(prog="tuner.py detect-eas")
     parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
+    parser.add_argument("--tuner", default="", help="tuner id for the per-tuner Zabbix item")
     parser.add_argument("name", help="station name (for the Zabbix event)")
     parser.add_argument("rate", type=int, help="PCM sample rate in Hz")
     parser.add_argument("channels", type=int, help="audio channel count (1 or 2)")
     args = parser.parse_args(argv)
-    run_eas_detector(args.dir, args.name, args.rate, args.channels)
+    run_eas_detector(args.dir, args.name, args.rate, args.channels, args.tuner)
     return 0
 
 
@@ -1769,6 +1998,18 @@ def _main_backup_config(argv):
     args = parser.parse_args(argv)
     dest = backup_config(args.dir)
     print(f"Backed up settings to {dest}" if dest else "No settings to back up.")
+    return 0
+
+
+def _main_level(argv):
+    parser = argparse.ArgumentParser(prog="tuner.py level")
+    parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
+    parser.add_argument("--tuner", required=True, help="tuner id, e.g. tuner1")
+    parser.add_argument("name", help="station name")
+    parser.add_argument("rate", type=int, help="PCM sample rate in Hz")
+    parser.add_argument("channels", type=int, help="audio channel count (1 or 2)")
+    args = parser.parse_args(argv)
+    run_level_meter(args.dir, args.tuner, args.name, args.rate, args.channels)
     return 0
 
 
@@ -1821,9 +2062,14 @@ def _main_rbds_meta(argv):
     parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
     parser.add_argument("--log-name", default=None,
                         help="station name: also append to its daily RBDS.log")
+    parser.add_argument("--tuner", default="", help="tuner id: also send RT/PS to its Zabbix items")
     parser.add_argument("mount", help="Icecast mount point, e.g. /tuner1")
     args = parser.parse_args(argv)
-    run_rbds_meta(args.dir, args.mount, log_name=args.log_name)
+    zbx = None
+    if args.tuner:
+        zbx = ZabbixSender(parse_keyvalue(os.path.join(args.dir, "zabbix.conf")))
+        zbx = zbx if zbx.enabled else None
+    run_rbds_meta(args.dir, args.mount, log_name=args.log_name, zbx=zbx, tid=args.tuner)
     return 0
 
 
@@ -1832,6 +2078,8 @@ def main(argv=None):
         argv = sys.argv[1:]
     if argv and argv[0] == "detect-eas":
         return _main_detect_eas(argv[1:])
+    if argv and argv[0] == "level":
+        return _main_level(argv[1:])
     if argv and argv[0] == "upgrade-config":
         return _main_upgrade_config(argv[1:])
     if argv and argv[0] == "backup-config":

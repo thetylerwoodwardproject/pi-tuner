@@ -10,10 +10,10 @@
     </groups>
     <templates>
         <template>
-            <uuid>1b4a31dbcdbd43c183895799e6a72cf9</uuid>
+            <uuid>affaafff4a5d4c88ba76ec2a65349437</uuid>
             <template>Pi-Tuner</template>
             <name>Pi-Tuner</name>
-            <description>Pi-Tuner SDR streaming appliance. Data is pushed by tuner.py on the Pi using the Zabbix trapper (zabbix_sender) protocol. Attach this template to the Zabbix host named to match HOSTNAME in zabbix.conf. Requires Zabbix 6.0 or newer.</description>
+            <description>Pi-Tuner SDR streaming appliance. tuner.py pushes data with the Zabbix trapper (zabbix_sender) protocol. Each tuner (one per station) is discovered automatically and gets its own items: state, band, frequency, station name, mount, serial, genre, restarts, recording, RBDS RadioText and PS, EAS and audio level. Attach this template to the Zabbix host whose name matches HOSTNAME in zabbix.conf. Requires Zabbix 6.0 or newer.</description>
             <groups>
                 <group>
                     <name>Templates</name>
@@ -21,7 +21,7 @@
             </groups>
             <items>
                 <item>
-                    <uuid>041a777570bf4f1e9f496abc6e162b2d</uuid>
+                    <uuid>54940be14a9f4a74baa61b275bc8bb28</uuid>
                     <name>Pi-Tuner event</name>
                     <type>TRAP</type>
                     <key>pituner.event</key>
@@ -29,68 +29,41 @@
                     <history>7d</history>
                     <trends>0</trends>
                     <value_type>TEXT</value_type>
-                    <description>Last event pushed by the Pi-Tuner (station started/down/recovered, serial not found, config errors).</description>
+                    <description>Last event pushed by Pi-Tuner (station started/down/recovered, serial not found, config errors).</description>
                 </item>
                 <item>
-                    <uuid>671a97db3e804498bb2349e6f5b6ce2f</uuid>
-                    <name>Pi-Tuner status</name>
-                    <type>TRAP</type>
-                    <key>pituner.status</key>
-                    <delay>0</delay>
-                    <history>7d</history>
-                    <trends>0</trends>
-                    <value_type>TEXT</value_type>
-                    <description>JSON snapshot of per-station status, e.g. {"station1":"streaming","station2":"down"}. Refreshed on every heartbeat and on status changes.</description>
-                    <triggers>
-                        <trigger>
-                            <uuid>07340d40880a486b9fa212a3169e8954</uuid>
-                            <expression>find(/Pi-Tuner/pituner.status,#1,"like","down")=1</expression>
-                            <name>Pi-Tuner station down</name>
-                            <priority>HIGH</priority>
-                            <description>At least one station has a pipeline that exited unexpectedly (dongle unplugged, Icecast unreachable, or decode failure).</description>
-                        </trigger>
-                        <trigger>
-                            <uuid>10f2ddc90eeb4f92a44b5dbc0f04c4d4</uuid>
-                            <expression>find(/Pi-Tuner/pituner.status,#1,"like","serial_not_found")=1</expression>
-                            <name>Pi-Tuner serial not found</name>
-                            <priority>HIGH</priority>
-                            <description>A configured dongle serial is not present on any connected device.</description>
-                        </trigger>
-                    </triggers>
-                </item>
-                <item>
-                    <uuid>8e2c0bf6525c40ecb93d885fd0da7ec7</uuid>
-                    <name>Pi-Tuner stations active</name>
+                    <uuid>456b7a6294654c30a6c1e562e1cf1c27</uuid>
+                    <name>Pi-Tuner stations streaming</name>
                     <type>TRAP</type>
                     <key>pituner.stations_active</key>
                     <delay>0</delay>
-                    <history>7d</history>
-                    <trends>0</trends>
+                    <history>31d</history>
+                    <trends>365d</trends>
                     <value_type>UNSIGNED</value_type>
-                    <description>Number of stations currently streaming.</description>
+                    <description>Number of tuners currently streaming.</description>
                     <triggers>
                         <trigger>
-                            <uuid>9d9514522d944f10921aacf3805418fc</uuid>
+                            <uuid>55fe20046ebb4f13986bce1535a1e9b2</uuid>
                             <expression>last(/Pi-Tuner/pituner.stations_active)=0</expression>
                             <name>Pi-Tuner no stations streaming</name>
                             <priority>WARNING</priority>
-                            <description>Zero stations are currently streaming.</description>
+                            <description>Zero tuners are currently streaming.</description>
                         </trigger>
                     </triggers>
                 </item>
                 <item>
-                    <uuid>8c5e63fd0dc345a3b4817345dfa2088d</uuid>
+                    <uuid>bbdb0ededb0d4d009f7929807d483c13</uuid>
                     <name>Pi-Tuner heartbeat</name>
                     <type>TRAP</type>
                     <key>pituner.heartbeat</key>
                     <delay>0</delay>
-                    <history>7d</history>
-                    <trends>0</trends>
+                    <history>31d</history>
+                    <trends>365d</trends>
                     <value_type>UNSIGNED</value_type>
                     <description>Liveness marker sent every INTERVAL seconds (zabbix.conf). A missing value means the Pi or tuner.py is down.</description>
                     <triggers>
                         <trigger>
-                            <uuid>496aeb0a24e74212a0d2ab109b210a7c</uuid>
+                            <uuid>afaac69167084a728b05b925b8360f64</uuid>
                             <expression>nodata(/Pi-Tuner/pituner.heartbeat,5m)=1</expression>
                             <name>Pi-Tuner heartbeat lost</name>
                             <priority>HIGH</priority>
@@ -99,26 +72,286 @@
                     </triggers>
                 </item>
                 <item>
-                    <uuid>2ce9948fff024f88a051c927199d9061</uuid>
-                    <name>Pi-Tuner EAS attention tone</name>
+                    <uuid>0609b1d89a9c4f30a7751e103f6a8802</uuid>
+                    <name>Pi-Tuner EAS attention tone (any tuner)</name>
                     <type>TRAP</type>
                     <key>pituner.eas</key>
                     <delay>0</delay>
-                    <history>7d</history>
-                    <trends>0</trends>
+                    <history>31d</history>
+                    <trends>365d</trends>
                     <value_type>UNSIGNED</value_type>
-                    <description>Set to 1 for ~10 seconds when the EAS/SAME attention tone (853+960 Hz) is heard on a station, then reset to 0. See the pituner.event item for which station.</description>
-                    <triggers>
-                        <trigger>
-                            <uuid>7311559da0ee40358a1f62b32ede31d4</uuid>
-                            <expression>last(/Pi-Tuner/pituner.eas)=1</expression>
-                            <name>Pi-Tuner EAS attention tone heard</name>
-                            <priority>HIGH</priority>
-                            <description>The EAS/SAME attention tone (853+960 Hz) was heard on a monitored station. Auto-recovers when the item drops back to 0.</description>
-                        </trigger>
-                    </triggers>
+                    <description>Set to 1 for about 10 seconds when the EAS attention tone is heard on any tuner, then reset to 0. The per-tuner items and triggers say which one.</description>
                 </item>
             </items>
+            <discovery_rules>
+                <discovery_rule>
+                    <uuid>7cbb1daa63f941b78fb723ec7b4efe43</uuid>
+                    <name>Pi-Tuner tuners</name>
+                    <type>TRAP</type>
+                    <key>pituner.tuners.discovery</key>
+                    <delay>0</delay>
+                    <lifetime>7d</lifetime>
+                    <description>One tuner per station. tuner.py sends the list (macros {#TUNER}, {#NAME}, {#BAND}, {#FREQ}, {#MOUNT}) with every status snapshot; tuners removed from the config are deleted after 7 days.</description>
+                    <item_prototypes>
+                        <item_prototype>
+                            <uuid>291cd485b237431a9938ae5d595c0639</uuid>
+                            <name>{#NAME}: state</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.state[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>7d</history>
+                            <trends>0</trends>
+                            <value_type>CHAR</value_type>
+                            <description>Pipeline state: streaming, down, serial_not_found or stopped</description>
+                            <trigger_prototypes>
+                                <trigger_prototype>
+                                    <uuid>fe3fabe515034564836a7b51bcfe416d</uuid>
+                                    <expression>find(/Pi-Tuner/pituner.tuner.state[{#TUNER}],#1,"like","serial_not_found")=1</expression>
+                                    <name>{#NAME} serial not found</name>
+                                    <priority>HIGH</priority>
+                                    <description>The tuner's configured dongle serial is not present on any connected device.</description>
+                                </trigger_prototype>
+                            </trigger_prototypes>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>8a610746d58b4001b27f6c44c3ce8c43</uuid>
+                            <name>{#NAME}: up</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.up[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>31d</history>
+                            <trends>365d</trends>
+                            <value_type>UNSIGNED</value_type>
+                            <description>1 while the tuner is streaming, otherwise 0</description>
+                            <valuemap>
+                                <name>Pi-Tuner up/down</name>
+                            </valuemap>
+                            <trigger_prototypes>
+                                <trigger_prototype>
+                                    <uuid>640c5e24c2b1472a8fc92c0cfd1631a4</uuid>
+                                    <expression>max(/Pi-Tuner/pituner.tuner.up[{#TUNER}],2m)=0</expression>
+                                    <name>{#NAME} is down</name>
+                                    <priority>HIGH</priority>
+                                    <description>The tuner has not been streaming for 2 minutes (dongle unplugged, Icecast unreachable, or decode failure).</description>
+                                </trigger_prototype>
+                            </trigger_prototypes>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>9108d59bd91642a7a8999d7bcc1594f9</uuid>
+                            <name>{#NAME}: station name</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.name[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>7d</history>
+                            <trends>0</trends>
+                            <value_type>CHAR</value_type>
+                            <description>Station name from the station file</description>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>9df73d50ddaa403a9c403370d413269c</uuid>
+                            <name>{#NAME}: band</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.band[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>7d</history>
+                            <trends>0</trends>
+                            <value_type>CHAR</value_type>
+                            <description>fm or wx</description>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>90148ec9cfef48adae98c09e34bfd361</uuid>
+                            <name>{#NAME}: frequency</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.frequency[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>31d</history>
+                            <trends>365d</trends>
+                            <value_type>FLOAT</value_type>
+                            <units>MHz</units>
+                            <description>Tuned frequency in MHz</description>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>ff81be7745c24f8aad764bea0d69d840</uuid>
+                            <name>{#NAME}: mount</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.mount[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>7d</history>
+                            <trends>0</trends>
+                            <value_type>CHAR</value_type>
+                            <description>Icecast mount point</description>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>09f87cbbc2d048ddaf28226504b6ec75</uuid>
+                            <name>{#NAME}: dongle serial</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.serial[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>7d</history>
+                            <trends>0</trends>
+                            <value_type>CHAR</value_type>
+                            <description>Dongle serial number</description>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>6917d27f6f3d4e34875263d7a9b17d97</uuid>
+                            <name>{#NAME}: genre</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.genre[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>7d</history>
+                            <trends>0</trends>
+                            <value_type>CHAR</value_type>
+                            <description>Icecast genre: the RBDS program type, Radio, or Weather</description>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>5ef9615f46974fbea7de884fc7fc4be5</uuid>
+                            <name>{#NAME}: restarts</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.restarts[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>31d</history>
+                            <trends>365d</trends>
+                            <value_type>UNSIGNED</value_type>
+                            <description>Times the pipeline has been restarted since the service started</description>
+                            <trigger_prototypes>
+                                <trigger_prototype>
+                                    <uuid>2ace5b5bc4a5438e98c0f1c303c21d4f</uuid>
+                                    <expression>last(/Pi-Tuner/pituner.tuner.restarts[{#TUNER}])-min(/Pi-Tuner/pituner.tuner.restarts[{#TUNER}],15m)&gt;=3</expression>
+                                    <name>{#NAME} is restarting repeatedly</name>
+                                    <priority>WARNING</priority>
+                                    <description>The tuner's pipeline restarted 3 or more times in the last 15 minutes.</description>
+                                </trigger_prototype>
+                            </trigger_prototypes>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>0bd529ead2f1448c9c682030cee4226d</uuid>
+                            <name>{#NAME}: recording enabled</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.recording[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>31d</history>
+                            <trends>365d</trends>
+                            <value_type>UNSIGNED</value_type>
+                            <description>1 if this tuner records to disk (RECORD=true)</description>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>8caf7e8f06c444fb906b78ff084ccbcb</uuid>
+                            <name>{#NAME}: newest recording age</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.recording.age[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>31d</history>
+                            <trends>365d</trends>
+                            <value_type>FLOAT</value_type>
+                            <units>s</units>
+                            <description>Seconds since the newest recording file was written, -1 if none</description>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>cd713d3f184a467b9caa7aff778d6bb1</uuid>
+                            <name>{#NAME}: RBDS RadioText</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.rbds.rt[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>7d</history>
+                            <trends>0</trends>
+                            <value_type>TEXT</value_type>
+                            <description>Current RBDS RadioText</description>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>889285b4de6c405f8354bf60e1789a16</uuid>
+                            <name>{#NAME}: RBDS PS</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.rbds.ps[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>7d</history>
+                            <trends>0</trends>
+                            <value_type>CHAR</value_type>
+                            <description>Current RBDS station name (PS), or the callsign for a scrolling PS</description>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>fbd75f3f1bb14fd0b3b5e9e19eb5e1c2</uuid>
+                            <name>{#NAME}: EAS attention tone</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.eas[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>31d</history>
+                            <trends>365d</trends>
+                            <value_type>UNSIGNED</value_type>
+                            <description>1 for about 10 seconds when the EAS attention tone is heard</description>
+                            <trigger_prototypes>
+                                <trigger_prototype>
+                                    <uuid>dda82609f825424398938db899f8d71c</uuid>
+                                    <expression>last(/Pi-Tuner/pituner.tuner.eas[{#TUNER}])=1</expression>
+                                    <name>EAS attention tone heard on {#NAME}</name>
+                                    <priority>HIGH</priority>
+                                    <description>The EAS/SAME attention tone (853+960 Hz) was heard on this tuner. Auto-recovers when the item drops back to 0.</description>
+                                </trigger_prototype>
+                            </trigger_prototypes>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>27938535eb404b3aa0dbdfc16e48eb47</uuid>
+                            <name>{#NAME}: audio level</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.level[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>31d</history>
+                            <trends>365d</trends>
+                            <value_type>FLOAT</value_type>
+                            <units>dBFS</units>
+                            <description>Audio level in dBFS (RMS), averaged over 10 seconds</description>
+                        </item_prototype>
+                    </item_prototypes>
+                    <trigger_prototypes>
+                        <trigger_prototype>
+                            <uuid>0cb517f508e64f2195bf977ddc928265</uuid>
+                            <expression>max(/Pi-Tuner/pituner.tuner.level[{#TUNER}],{$PITUNER.SILENCE.TIME})&lt;{$PITUNER.SILENCE.DB} and last(/Pi-Tuner/pituner.tuner.up[{#TUNER}])=1</expression>
+                            <name>Dead air on {#NAME}</name>
+                            <priority>HIGH</priority>
+                            <description>The tuner is streaming but its audio level has stayed below the silence threshold ({$PITUNER.SILENCE.DB} dBFS) for {$PITUNER.SILENCE.TIME}.</description>
+                        </trigger_prototype>
+                        <trigger_prototype>
+                            <uuid>34471143cf744d0b881f2cd1ac7f7645</uuid>
+                            <expression>last(/Pi-Tuner/pituner.tuner.recording[{#TUNER}])=1 and last(/Pi-Tuner/pituner.tuner.recording.age[{#TUNER}])&gt;{$PITUNER.REC.STALE}</expression>
+                            <name>{#NAME} recording stalled</name>
+                            <priority>WARNING</priority>
+                            <description>This tuner should be recording but no recording file has been written for over {$PITUNER.REC.STALE} seconds (or none exists).</description>
+                        </trigger_prototype>
+                    </trigger_prototypes>
+                </discovery_rule>
+            </discovery_rules>
+            <macros>
+                <macro>
+                    <macro>{$PITUNER.SILENCE.DB}</macro>
+                    <value>-60</value>
+                    <description>Audio level (dBFS) below which a streaming tuner counts as silent.</description>
+                </macro>
+                <macro>
+                    <macro>{$PITUNER.SILENCE.TIME}</macro>
+                    <value>1m</value>
+                    <description>How long the level must stay below the threshold before the dead-air trigger fires.</description>
+                </macro>
+                <macro>
+                    <macro>{$PITUNER.REC.STALE}</macro>
+                    <value>300</value>
+                    <description>Seconds without a new recording file before a recording tuner is flagged.</description>
+                </macro>
+            </macros>
+            <valuemaps>
+                <valuemap>
+                    <uuid>0f42dae403934abda12d33103683b849</uuid>
+                    <name>Pi-Tuner up/down</name>
+                    <mappings>
+                        <mapping>
+                            <value>0</value>
+                            <newvalue>Down</newvalue>
+                        </mapping>
+                        <mapping>
+                            <value>1</value>
+                            <newvalue>Up</newvalue>
+                        </mapping>
+                    </mappings>
+                </valuemap>
+            </valuemaps>
         </template>
     </templates>
 </zabbix_export>
