@@ -26,6 +26,7 @@
   <a href="#add-and-edit-stations">Stations</a> ·
   <a href="#rbds-now-playing-optional">RBDS</a> ·
   <a href="#configuration-reference">Config</a> ·
+  <a href="docs/MANUAL.md">Full manual</a> ·
   <a href="#troubleshooting">Troubleshooting</a> ·
   <a href="#made-by">Made by</a>
 </p>
@@ -84,6 +85,10 @@ files and one Python program that systemd keeps running.
     <td>Installs everything, configures Icecast and walks you through your first stations</td>
   </tr>
 </table>
+
+> [!TIP]
+> The complete guide, with every setting, command and EAS/SAME detail, is in the
+> **[full manual](docs/MANUAL.md)**.
 
 ## How it works
 
