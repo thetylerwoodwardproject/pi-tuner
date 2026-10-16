@@ -17,7 +17,8 @@ Usage:
              command for each station without launching anything.
 
     tuner.py detect-eas --dir /opt/pituner <name> <rate> <channels>
-             run the EAS attention-tone detector on raw s16le PCM from stdin.
+             run the EAS attention-tone detector and SAME header decoder on
+             raw s16le PCM from stdin.
 
     tuner.py record --dir /opt/pituner <name> <rate> <channels>
              record raw s16le PCM from stdin to 128 kbps MP3 files, one per
@@ -47,6 +48,7 @@ Usage:
 import argparse
 import array
 import base64
+import cmath
 import datetime
 import email.message
 import email.utils
@@ -1149,14 +1151,313 @@ def _eas_tone_present(samples, sample_rate):
     return p1 > EAS_TONE_RATIO and p2 > EAS_TONE_RATIO
 
 
+# ---------------------------------------------------- SAME header decoding
+# The EAS attention tone is preceded by the SAME header: three bursts of 520.83
+# baud AFSK (mark 2083.33 Hz = 1, space 1562.5 Hz = 0, LSB first, no framing)
+# carrying e.g. ZCZC-WXR-TOR-022071+0030-2891403-KLOX/NWS-. We demodulate it
+# in pure Python at ~8 kHz: boxcar decimate, correlate one bit period against
+# each tone, and sample the decision at several bit phases at once so no clock
+# recovery is needed. A header is accepted only if it parses cleanly; the most
+# common copy among the bursts heard wins, which repairs most bit errors.
+
+SAME_BAUD = 520.83
+SAME_MARK = 2083.33
+SAME_SPACE = 1562.5
+SAME_TARGET_RATE = 8000.0
+SAME_PHASES = 8
+SAME_COLLECT_SECS = 5.0
+SAME_DUP_SECS = 120.0
+SAME_MAX_LEN = 280
+SAME_HEADER_RE = re.compile(
+    r"^ZCZC-([A-Z]{3})-([A-Z0-9]{3})((?:-\d{6}){1,31})\+(\d{4})-(\d{3})(\d{2})(\d{2})-([A-Za-z0-9/ ]{1,8})-$")
+_ZCZC = int.from_bytes(b"ZCZC", "little")
+_NNNN = int.from_bytes(b"NNNN", "little")
+_SAME_CHARS = frozenset(b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+-/ ")
+
+SAME_ORIGINATORS = {
+    "EAS": "an EAS participant (broadcaster / cable)",
+    "CIV": "civil authorities",
+    "WXR": "the National Weather Service",
+    "PEP": "the Primary Entry Point system (national)",
+}
+
+SAME_EVENTS = {
+    "EAN": "Emergency Action Notification", "NPT": "National Periodic Test",
+    "EAT": "Emergency Action Termination", "RMT": "Required Monthly Test",
+    "RWT": "Required Weekly Test", "ADR": "Administrative Message",
+    "AVA": "Avalanche Watch", "AVW": "Avalanche Warning", "BZW": "Blizzard Warning",
+    "CAE": "Child Abduction Emergency", "CDW": "Civil Danger Warning",
+    "CEM": "Civil Emergency Message", "CFA": "Coastal Flood Watch",
+    "CFW": "Coastal Flood Warning", "DSW": "Dust Storm Warning",
+    "EQW": "Earthquake Warning", "EVI": "Evacuation Immediate",
+    "EWW": "Extreme Wind Warning", "FRW": "Fire Warning",
+    "FFA": "Flash Flood Watch", "FFS": "Flash Flood Statement",
+    "FFW": "Flash Flood Warning", "FLA": "Flood Watch", "FLS": "Flood Statement",
+    "FLW": "Flood Warning", "FSW": "Flash Freeze Warning", "FZW": "Freeze Warning",
+    "HMW": "Hazardous Materials Warning", "HWA": "High Wind Watch",
+    "HWW": "High Wind Warning", "HUA": "Hurricane Watch", "HUW": "Hurricane Warning",
+    "HLS": "Hurricane Statement", "LEW": "Law Enforcement Warning",
+    "LAE": "Local Area Emergency", "NMN": "Network Message Notification",
+    "TOE": "911 Telephone Outage Emergency", "NUW": "Nuclear Power Plant Warning",
+    "DMO": "Practice / Demo Warning", "RHW": "Radiological Hazard Warning",
+    "SVA": "Severe Thunderstorm Watch", "SVR": "Severe Thunderstorm Warning",
+    "SVS": "Severe Weather Statement", "SPW": "Shelter in Place Warning",
+    "SMW": "Special Marine Warning", "SPS": "Special Weather Statement",
+    "SQW": "Snow Squall Warning", "SSA": "Storm Surge Watch",
+    "SSW": "Storm Surge Warning", "TOA": "Tornado Watch", "TOR": "Tornado Warning",
+    "TRA": "Tropical Storm Watch", "TRW": "Tropical Storm Warning",
+    "TSA": "Tsunami Watch", "TSW": "Tsunami Warning", "VOW": "Volcano Warning",
+    "WSA": "Winter Storm Watch", "WSW": "Winter Storm Warning",
+}
+
+SAME_STATES = {
+    "01": "Alabama", "02": "Alaska", "04": "Arizona", "05": "Arkansas",
+    "06": "California", "08": "Colorado", "09": "Connecticut", "10": "Delaware",
+    "11": "District of Columbia", "12": "Florida", "13": "Georgia", "15": "Hawaii",
+    "16": "Idaho", "17": "Illinois", "18": "Indiana", "19": "Iowa", "20": "Kansas",
+    "21": "Kentucky", "22": "Louisiana", "23": "Maine", "24": "Maryland",
+    "25": "Massachusetts", "26": "Michigan", "27": "Minnesota", "28": "Mississippi",
+    "29": "Missouri", "30": "Montana", "31": "Nebraska", "32": "Nevada",
+    "33": "New Hampshire", "34": "New Jersey", "35": "New Mexico", "36": "New York",
+    "37": "North Carolina", "38": "North Dakota", "39": "Ohio", "40": "Oklahoma",
+    "41": "Oregon", "42": "Pennsylvania", "44": "Rhode Island", "45": "South Carolina",
+    "46": "South Dakota", "47": "Tennessee", "48": "Texas", "49": "Utah",
+    "50": "Vermont", "51": "Virginia", "53": "Washington", "54": "West Virginia",
+    "55": "Wisconsin", "56": "Wyoming", "60": "American Samoa", "66": "Guam",
+    "69": "Northern Mariana Islands", "72": "Puerto Rico", "78": "US Virgin Islands",
+}
+SAME_PORTIONS = {"1": "northwest part of ", "2": "north part of ", "3": "northeast part of ",
+                 "4": "west part of ", "5": "central part of ", "6": "east part of ",
+                 "7": "southwest part of ", "8": "south part of ", "9": "southeast part of "}
+
+
+def _same_location(code):
+    portion, fips = code[0], code[1:]
+    if fips == "00000":
+        return "the entire United States"
+    state = SAME_STATES.get(fips[:2], f"area {fips[:2]}")
+    where = state if fips[2:] == "000" else f"{state}, county {fips[2:]} (FIPS {fips})"
+    return SAME_PORTIONS.get(portion, "") + where
+
+
+def _same_issued(julian, hour, minute, now):
+    """UTC issue time for a JJJHHMM stamp, in the year nearest ``now``."""
+    best = None
+    for year in (now.year - 1, now.year, now.year + 1):
+        try:
+            when = (datetime.datetime(year, 1, 1, tzinfo=datetime.timezone.utc)
+                    + datetime.timedelta(days=julian - 1, hours=hour, minutes=minute))
+        except OverflowError:
+            continue
+        if when.year == year and (best is None or abs(when - now) < abs(best - now)):
+            best = when
+    return best
+
+
+def parse_same(header, now=None):
+    """Decode a SAME header string into a dict, or return None if it isn't valid."""
+    m = SAME_HEADER_RE.match(header)
+    if not m:
+        return None
+    org, event, locs, purge, julian, hour, minute, sender = m.groups()
+    julian, hour, minute = int(julian), int(hour), int(minute)
+    if not (1 <= julian <= 366 and hour < 24 and minute < 60 and int(purge[2:]) < 60):
+        return None
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    issued = _same_issued(julian, hour, minute, now)
+    if issued is None:
+        return None
+    minutes = int(purge[:2]) * 60 + int(purge[2:])
+    codes = [loc for loc in locs.split("-") if loc]
+    return {
+        "raw": header,
+        "originator": org,
+        "originator_name": SAME_ORIGINATORS.get(org, "unknown originator"),
+        "event": event,
+        "event_name": SAME_EVENTS.get(event, "Unknown event"),
+        "locations": [c[1:] for c in codes],
+        "location_names": [_same_location(c) for c in codes],
+        "purge_minutes": minutes,
+        "issued": issued,
+        "expires": issued + datetime.timedelta(minutes=minutes),
+        "sender": sender.strip(),
+    }
+
+
+def same_summary(info):
+    """One line, e.g. 'Tornado Warning (TOR) for Louisiana, county 071 (FIPS 22071), from KLOX/NWS'."""
+    where = "; ".join(info["location_names"])
+    return f"{info['event_name']} ({info['event']}) for {where}, from {info['sender'] or 'unknown'}"
+
+
+def same_email_body(info, name, when):
+    def utc(dt):
+        return dt.strftime("%Y-%m-%d %H:%M UTC")
+    mins = info["purge_minutes"]
+    return (
+        f"A SAME (EAS) message was decoded on {name} at {time.strftime('%Y-%m-%d %H:%M:%S', when)}.\n\n"
+        f"Event:      {info['event_name']} ({info['event']})\n"
+        f"Originator: {info['originator_name']} ({info['originator']})\n"
+        f"Sender ID:  {info['sender'] or 'unknown'}\n"
+        "Areas:      " + "\n            ".join(info["location_names"]) + "\n"
+        f"Issued:     {utc(info['issued'])}\n"
+        f"Valid for:  {mins // 60}h {mins % 60:02d}m (until {utc(info['expires'])})\n\n"
+        f"Raw header: {info['raw']}\n\n"
+        "Counties are shown as their 3-digit FIPS code, not looked up by name. "
+        "The spoken message itself is not decoded.")
+
+
+class _SameBits:
+    """One bit phase: finds ZCZC/NNNN in a bit stream and collects the header."""
+
+    def __init__(self):
+        self.reg = 0
+        self.collecting = False
+        self.byte = 0
+        self.nbits = 0
+        self.text = []
+
+    def feed(self, bit):
+        """Take one bit; returns ("header", text), ("eom", "") or None."""
+        if not self.collecting:
+            self.reg = (self.reg >> 1) | (bit << 31)
+            if self.reg == _ZCZC:
+                self.collecting, self.text = True, list("ZCZC")
+                self.byte = self.nbits = 0
+            elif self.reg == _NNNN:
+                self.reg = 0
+                return ("eom", "")
+            return None
+        self.byte |= bit << self.nbits
+        self.nbits += 1
+        if self.nbits < 8:
+            return None
+        ch, self.byte, self.nbits = self.byte, 0, 0
+        if ch not in _SAME_CHARS or len(self.text) >= SAME_MAX_LEN:
+            self.collecting, self.reg = False, 0
+            return None
+        self.text.append(chr(ch))
+        if ch == 0x2D and "+" in self.text:        # '-' after the time group
+            text = "".join(self.text)
+            if SAME_HEADER_RE.match(text):
+                self.collecting, self.reg = False, 0
+                return ("header", text)
+        return None
+
+
+class SameDecoder:
+    """Streaming SAME demodulator. ``feed`` takes mono int samples and returns
+    a list of ("header" | "eom", text) events, one per decoded burst copy."""
+
+    def __init__(self, sample_rate):
+        self.dec = max(1, int(round(sample_rate / SAME_TARGET_RATE)))
+        self.rate = sample_rate / self.dec
+        self.spb = self.rate / SAME_BAUD
+        self.win = max(2, int(round(self.spb)))
+        self.rm = cmath.exp(-2j * math.pi * SAME_MARK / self.rate)
+        self.rs = cmath.exp(-2j * math.pi * SAME_SPACE / self.rate)
+        self.ring_m = [0j] * self.win
+        self.ring_s = [0j] * self.win
+        self.pos = 0
+        self.sum_m = self.sum_s = 0j
+        self.n = 0                       # decimated samples consumed so far
+        self.rem = []                    # samples left over from the last block
+        self.next_t = [self.spb * (p + 1) / SAME_PHASES for p in range(SAME_PHASES)]
+        self.bits = [_SameBits() for _ in range(SAME_PHASES)]
+
+    def feed(self, samples):
+        samples = self.rem + list(samples) if self.rem else samples
+        dec = self.dec
+        count = len(samples) // dec
+        self.rem = list(samples[count * dec:])
+        if count == 0:
+            return []
+        if dec > 1:
+            x = [sum(samples[i * dec:(i + 1) * dec]) for i in range(count)]
+        else:
+            x = samples
+        n0 = self.n
+        zm = cmath.exp(-2j * math.pi * SAME_MARK * n0 / self.rate)
+        zs = cmath.exp(-2j * math.pi * SAME_SPACE * n0 / self.rate)
+        rm, rs, win = self.rm, self.rs, self.win
+        ring_m, ring_s, pos = self.ring_m, self.ring_s, self.pos
+        sm, ss = self.sum_m, self.sum_s
+        decision = []
+        append = decision.append
+        for v in x:
+            pm = v * zm
+            ps = v * zs
+            zm *= rm
+            zs *= rs
+            sm += pm - ring_m[pos]
+            ss += ps - ring_s[pos]
+            ring_m[pos] = pm
+            ring_s[pos] = ps
+            pos += 1
+            if pos == win:
+                pos = 0
+            append(sm.real * sm.real + sm.imag * sm.imag - ss.real * ss.real - ss.imag * ss.imag)
+        self.pos, self.sum_m, self.sum_s = pos, sm, ss
+        self.n = n0 + count
+        events = []
+        for p in range(SAME_PHASES):
+            t = self.next_t[p]
+            bits = self.bits[p]
+            while t < self.n:
+                ev = bits.feed(1 if decision[int(t) - n0] > 0 else 0)
+                if ev:
+                    events.append(ev)
+                t += self.spb
+            self.next_t[p] = t
+        return events
+
+
+class SameCollector:
+    """Turns raw burst decodes into one message per alert.
+
+    The first valid header opens a short window; every valid copy heard in it
+    is a vote, and the most common one is reported. The same message is not
+    reported again for SAME_DUP_SECS.
+    """
+
+    def __init__(self):
+        self.votes = {}
+        self.first = 0.0
+        self.last_sent = {}      # header -> time reported
+        self.last_any = -SAME_DUP_SECS
+
+    def recent(self, now):
+        """True if a message is being collected or was reported moments ago."""
+        return bool(self.votes) or now - self.last_any < SAME_DUP_SECS
+
+    def add(self, text, now):
+        if not self.votes:
+            self.first = now
+        self.votes[text] = self.votes.get(text, 0) + 1
+
+    def poll(self, now):
+        """Returns the winning header once the window closes, else None."""
+        if not self.votes or now - self.first < SAME_COLLECT_SECS:
+            return None
+        best = max(self.votes, key=lambda t: self.votes[t])
+        self.votes = {}
+        if now - self.last_sent.get(best, -SAME_DUP_SECS) < SAME_DUP_SECS:
+            return None
+        self.last_sent[best] = self.last_any = now
+        return best
+
+
 def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
-    """Read s16le PCM from stdin and pulse a Zabbix item on the EAS tone.
+    """Read s16le PCM from stdin; pulse a Zabbix item on the EAS tone and
+    decode/report the SAME header that precedes it.
 
     Best-effort and non-blocking: a missing Zabbix server is ignored and the
     process exits cleanly on stdin EOF, never stalling the audio pipeline.
     """
     zbx = ZabbixSender(parse_keyvalue(os.path.join(base_dir, "zabbix.conf")))
     mailer = Mailer(parse_keyvalue(os.path.join(base_dir, "smtp.conf")))
+    same = SameDecoder(sample_rate)
+    collector = SameCollector()
 
     def eas_items(value):
         """The any-tuner pulse, plus this tuner's own item."""
@@ -1164,6 +1465,20 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
         if tid:
             items.append((zbx.tuner_key("eas", tid), value))
         return items
+
+    def report_same(header, now):
+        info = parse_same(header)
+        if info is None:
+            return
+        summary = same_summary(info)
+        msg = f"EAS message on {name}: {summary}"
+        print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
+        log_file("eas.log", f"{msg} [{header}]")
+        if zbx.enabled:
+            zbx.send([(zbx.key_event, msg)])
+        if mailer.alert_eas:
+            mailer.send(f"EAS alert on {name}: {info['event_name']}",
+                        same_email_body(info, name, time.localtime(now)))
 
     block = int(sample_rate * EAS_WINDOW_SECS)
     chunk = block * 2 * channels  # bytes per window (2 bytes per sample)
@@ -1179,6 +1494,14 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
         if channels == 2:
             samples = samples[0::2]  # left channel (attention tone is mono)
         now = time.time()
+        for kind, text in same.feed(samples):
+            if kind == "header":
+                collector.add(text, now)
+            else:
+                log_file("eas.log", f"EAS end of message heard on {name}")
+        header = collector.poll(now)
+        if header:
+            report_same(header, now)
         if pulsing and now - pulse_start >= EAS_HOLD_SECS:
             if zbx.enabled:
                 zbx.send(eas_items(0))
@@ -1198,15 +1521,21 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
             log_file("eas.log", msg)
             if zbx.enabled:
                 zbx.send(eas_items(1) + [(zbx.key_event, msg)])
-            if mailer.alert_eas:
+            # A decoded SAME email already covers this alert; send the bare
+            # tone email only when no header was (or is about to be) decoded.
+            if mailer.alert_eas and not collector.recent(now):
                 mailer.send(
                     f"EAS attention tone heard on {name}",
                     f"The EAS attention tone (853 Hz + 960 Hz) was detected on {name} at "
                     f"{time.strftime('%Y-%m-%d %H:%M:%S')}.\n\n"
-                    "This is tone detection only; Pi-Tuner does not decode the SAME message.")
+                    "The SAME header was not decoded (weak signal, or it came before "
+                    "Pi-Tuner was listening).")
             pulsing = True
             pulse_start = now
             hits = 0
+    header = collector.poll(time.time() + SAME_COLLECT_SECS)  # stream ended mid-window
+    if header:
+        report_same(header, time.time())
     if pulsing and zbx.enabled:  # pipeline ended mid-pulse: don't leave the item stuck at 1
         zbx.send(eas_items(0))
     mailer.flush(10.0)

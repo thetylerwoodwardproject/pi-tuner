@@ -65,7 +65,7 @@ files and one Python program that systemd keeps running.
   </tr>
   <tr>
     <td>🚨&nbsp;<b>EAS&nbsp;tone&nbsp;detection</b></td>
-    <td>Listens for the 853 + 960 Hz attention tone and alerts you through Zabbix</td>
+    <td>Listens for the 853 + 960 Hz attention tone, decodes the SAME header (event, areas, sender) and alerts you by email or Zabbix</td>
   </tr>
   <tr>
     <td>📟&nbsp;<b>Zabbix&nbsp;alerts</b></td>
@@ -380,7 +380,8 @@ What you get (the Pi's host name is added to every subject):
 |-------|------|
 | `WLSU is DOWN` | A station's stream stopped or its dongle serial wasn't found, and it's still down after `DOWN_DELAY` |
 | `WLSU is back up` | It recovered, with the downtime. Only sent if the "down" email went out |
-| `EAS attention tone heard on WLSU` | The 853 + 960 Hz tone was detected |
+| `EAS alert on WLSU: Tornado Warning` | A SAME header was decoded: event, areas, sender and validity |
+| `EAS attention tone heard on WLSU` | The 853 + 960 Hz tone was detected but no header could be decoded |
 | `Low disk space` / `Disk space recovered` | Only when a station records. Free space under `/opt/pituner` fell below `DISK_MIN_GB`, then rose well above it |
 | `Pi-Tuner started` / `Pi-Tuner stopped` | The service started (with each station's status) or is shutting down |
 
@@ -403,9 +404,41 @@ Zabbix alerts need `EAS_DETECT=true` in `zabbix.conf` (the default); email needs
 seconds, then back to `0`, so a `last()=1` trigger fires and auto-recovers. The
 station is logged in `pituner.event`.
 
-Detection is tone-only; it doesn't decode the SAME data. Tune the thresholds with
-the constants at the top of `tuner.py` (`EAS_TONE_RATIO`, `EAS_HOLD_SECS`,
-`EAS_COOLDOWN_SECS`).
+### SAME decoding
+
+The tone is announced by the SAME **header**, three short bursts of digital data
+sent just before it. Pi-Tuner decodes that header on every tuner it listens to
+(FM and WX) and turns it into plain language:
+
+```
+Subject: [Pi-Tuner] EAS alert on WLSU: Tornado Warning (pituner)
+
+Event:      Tornado Warning (TOR)
+Originator: the National Weather Service (WXR)
+Sender ID:  KLOX/NWS
+Areas:      Louisiana, county 071 (FIPS 22071)
+Issued:     2026-10-16 14:03 UTC
+Valid for:  0h 30m (until 2026-10-16 14:33 UTC)
+
+Raw header: ZCZC-WXR-TOR-022071+0030-2891403-KLOX/NWS-
+```
+
+- It's on whenever EAS detection is, with no extra setting. Email follows
+  `ALERT_EAS`; a Zabbix event (`pituner.event`) is sent too. Every decoded
+  message is also logged in `eas.log`.
+- A decoded email replaces the bare tone email for that alert. If the header
+  couldn't be decoded (weak signal) you still get the tone email.
+- The three bursts are compared and the most common copy wins, which fixes most
+  reception errors. A header that doesn't parse cleanly is dropped, never
+  emailed. The same alert isn't re-sent for two minutes.
+- Test and weekly-test messages (`RWT`, `RMT`) are decoded and emailed like any
+  other.
+- Counties are shown as their 3-digit FIPS code, not looked up by name. The
+  spoken message audio is not transcribed.
+- CPU cost is small: the audio is reduced to about 8 kHz before demodulation.
+
+Tune the tone thresholds with the constants at the top of `tuner.py`
+(`EAS_TONE_RATIO`, `EAS_HOLD_SECS`, `EAS_COOLDOWN_SECS`).
 
 ## RBDS now-playing (optional)
 
@@ -533,7 +566,7 @@ The Pi also keeps rotating logs on disk under `/var/www/pituner/`:
 | File         | Contents                                                             |
 |--------------|----------------------------------------------------------------------|
 | `tuner.log`  | Tuner health: station status changes, restarts, reloads             |
-| `eas.log`    | EAS attention-tone detections                                        |
+| `eas.log`    | EAS attention-tone detections and decoded SAME messages              |
 | `zabbix.log` | Mirror of what's sent to Zabbix (events only, not status snapshots)  |
 | `rbds.log`   | RBDS now-playing updates sent to Icecast, and any update failures    |
 | `recordings.log` | Recording problems (disk full, encoder errors)                   |
