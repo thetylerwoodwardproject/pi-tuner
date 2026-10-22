@@ -308,6 +308,89 @@ class WebShareTests(Base):
         self.share(env=f'PROC_NET_INET6="{self.d}/missing"\n')
         self.assertNotIn("[::]", self.conf_text())          # nginx would refuse the config
 
+    def site_env(self):
+        self.sites = os.path.join(self.d, "sites-enabled")
+        write(os.path.join(self.sites, "default"), "server { listen 80 default_server; }\n")
+        return f'NGINX_SITES_ENABLED="{self.sites}"\n'
+
+    def test_fresh_nginx_gets_port_80_and_loses_the_welcome_site(self):
+        env = self.site_env()
+        r = self.share(have_nginx=False, ask_answers=("", ""), env=env)       # accept the default port
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("listen 80;", self.conf_text())
+        self.assertFalse(os.path.exists(os.path.join(self.sites, "default")))
+        self.assertIn("http://pituner/", r.stdout)                            # no :port on 80
+        self.assertIn("apt-get install -y nginx", self.calls_text())
+
+    def test_existing_nginx_defaults_to_8080_and_keeps_its_default_site(self):
+        env = self.site_env()
+        self.share(ask_answers=("", ""), env=env)
+        self.assertIn("listen 8080;", self.conf_text())
+        self.assertTrue(os.path.exists(os.path.join(self.sites, "default")))
+
+    def test_existing_nginx_with_port_80_chosen_never_touches_its_sites(self):
+        env = self.site_env()
+        self.share(ask_answers=("80", ""), env=env)
+        self.assertIn("listen 80;", self.conf_text())
+        self.assertTrue(os.path.exists(os.path.join(self.sites, "default")))
+
+    def test_explicit_port_overrides_the_existing_listing_on_refresh(self):
+        self.share(ask_answers=("8081", ""))
+        r = self.share(interactive=0, existing=self.conf_text(), env="PITUNER_WEB_PORT=80\n")
+        text = self.conf_text()
+        self.assertIn("listen 80;", text)
+        self.assertNotIn("8081", text)
+
+    def test_logs_are_served_as_plain_text_only_when_asked(self):
+        self.share(confirm="n")                       # declined entirely
+        self.assertEqual(self.conf_text(), "")
+        self.share(interactive=0, env='PITUNER_WEB_RECORDINGS=1; PITUNER_WEB_PORT=8085\n')
+        self.assertNotIn("/logs/", self.conf_text())  # recordings only by default
+        os.remove(self.conf)
+        self.share(interactive=0, env='PITUNER_WEB_RECORDINGS=1; PITUNER_WEB_LOGS=1; LOG_DIR="/var/log/pituner"\n')
+        text = self.conf_text()
+        self.assertIn("location /logs/ {", text)
+        self.assertIn("alias /var/log/pituner/;", text)
+        self.assertIn("types { text/plain log; }", text)
+        self.assertIn("default_type application/octet-stream;", text)
+        self.assertEqual(text.count("limit_except GET HEAD { deny all; }"), 2)
+
+    def test_network_limit_sits_at_server_level_so_the_logs_inherit_it(self):
+        self.share(interactive=0, env='PITUNER_WEB_RECORDINGS=1; PITUNER_WEB_LOGS=1; '
+                                      'PITUNER_WEB_ALLOW=192.168.1.0/24\n')
+        text = self.conf_text()
+        self.assertLess(text.index("allow 192.168.1.0/24;"), text.index("location / {"))
+        self.assertLess(text.index("deny all;"), text.index("location / {"))
+
+    def test_refresh_keeps_the_logs_listing(self):
+        self.share(interactive=0, env='PITUNER_WEB_RECORDINGS=1; PITUNER_WEB_LOGS=1\n')
+        self.share(interactive=0, existing=self.conf_text())
+        self.assertIn("location /logs/ {", self.conf_text())
+
+    def test_existing_logs_are_scrubbed_of_the_icecast_password_before_publishing(self):
+        import gzip
+        logs = os.path.join(self.d, "logs")
+        leaky = "[t] station A: device 0 -> rtl_fm | ffmpeg icecast://source:S3cr3tPw@localhost:8000/tuner1\n"
+        write(os.path.join(logs, "tuner.log"), leaky + "keep this line\n")
+        with gzip.open(os.path.join(logs, "rbds.log.1.gz"), "wt") as f:
+            f.write(leaky)
+        r = self.share(interactive=0, env=f'PITUNER_WEB_RECORDINGS=1; PITUNER_WEB_LOGS=1; LOG_DIR="{logs}"\n')
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        text = read(os.path.join(logs, "tuner.log"))
+        self.assertNotIn("S3cr3tPw", text)
+        self.assertIn("icecast://source:***@localhost:8000/tuner1", text)
+        self.assertIn("keep this line", text)
+        with gzip.open(os.path.join(logs, "rbds.log.1.gz"), "rt") as f:
+            gz = f.read()
+        self.assertNotIn("S3cr3tPw", gz)
+        self.assertIn("source:***@", gz)
+
+    def test_logs_are_not_touched_when_they_are_not_published(self):
+        logs = os.path.join(self.d, "logs")
+        write(os.path.join(logs, "tuner.log"), "icecast://source:S3cr3tPw@localhost\n")
+        self.share(interactive=0, env=f'PITUNER_WEB_RECORDINGS=1; LOG_DIR="{logs}"\n')
+        self.assertIn("S3cr3tPw", read(os.path.join(logs, "tuner.log")))
+
     def test_installs_nginx_when_missing(self):
         self.share(have_nginx=False)
         self.assertIn("apt-get install -y nginx", self.calls_text())

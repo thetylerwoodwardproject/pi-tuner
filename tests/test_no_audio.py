@@ -243,3 +243,26 @@ class ServiceReadinessTests(unittest.TestCase):
         self.assertEqual(kinds[0], ("notify", "READY=1"))       # before any station starts
         self.assertEqual([e for e in events if e[0] == "start"], [("start", "W300BM"), ("start", "B")])
         self.assertGreaterEqual(events.count(("notify", "WATCHDOG=1")), 2)   # fed while stations start
+
+
+class LogRedactionTests(unittest.TestCase):
+    def test_passwords_in_urls_are_masked(self):
+        cmd = "rtl_fm -d 0 | ffmpeg icecast://source:hunter2@localhost:8000/tuner1"
+        self.assertEqual(tuner.redact_secrets(cmd),
+                         "rtl_fm -d 0 | ffmpeg icecast://source:***@localhost:8000/tuner1")
+        self.assertEqual(tuner.redact_secrets(tuner.redact_secrets(cmd)), tuner.redact_secrets(cmd))
+        self.assertEqual(tuner.redact_secrets("http://host/path no secret"), "http://host/path no secret")
+
+    def test_log_and_log_file_never_write_the_password(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        with mock.patch.object(tuner, "LOG_DIR", d), mock.patch("sys.stdout") as out:
+            tuner.log("station A: device 0 -> ffmpeg icecast://source:hunter2@localhost/t")
+            tuner.log_file("other.log", "icecast://source:hunter2@localhost/t")
+        for name in ("tuner.log", "other.log"):
+            with open(os.path.join(d, name)) as f:
+                text = f.read()
+            self.assertNotIn("hunter2", text)
+            self.assertIn("source:***@", text)
+        printed = "".join(str(c.args[0]) for c in out.write.call_args_list)
+        self.assertNotIn("hunter2", printed)
