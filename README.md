@@ -430,17 +430,45 @@ Raw header: ZCZC-WXR-TOR-022071+0030-2891403-KLOX/NWS-
 
 - It's on whenever EAS detection is, with no extra setting. Email follows
   `ALERT_EAS`; a Zabbix event (`pituner.event`) is sent too. Every decoded
-  message is also logged in `eas.log`.
+  message is also logged per station (see [EAS logs](#eas-logs)).
 - A decoded email replaces the bare tone email for that alert. If the header
   couldn't be decoded (weak signal) you still get the tone email.
 - The three bursts are compared and the most common copy wins, which fixes most
-  reception errors. A header that doesn't parse cleanly is dropped, never
-  emailed. The same alert isn't re-sent for two minutes.
+  reception errors. A header with a bad format or wrong characters is
+  thrown away; one with impossible values (day, hour or minute) is never
+  emailed, but its raw text is logged. The same alert isn't re-sent for two minutes.
 - Test and weekly-test messages (`RWT`, `RMT`) are decoded and emailed like any
   other.
 - Counties are shown as their 3-digit FIPS code, not looked up by name. The
   spoken message audio is not transcribed.
 - CPU cost is small: the audio is reduced to about 8 kHz before demodulation.
+
+### EAS logs
+
+Every EAS event is written to disk, whether or not Zabbix or email is set up to
+report it (the detector runs when either is on). Each station keeps its own log,
+`eas-NAME.log` (for example `eas-WLSU.log`, `eas-WXJ86.log`), and everything is
+also collected in `eas.log`. Both are in `/var/log/pituner/` and rotate with the
+other logs. Each station's log gets:
+
+- the **attention tone**, saying whether a SAME header was decoded with it;
+- the **decoded SAME message**: event code and name (`RWT`, `RMT`, `TOR`, `SVR`
+  and so on), areas, sender and the raw header;
+- the **end-of-message** marker;
+- a SAME header that matched the format but failed validation (bit errors), kept
+  as raw text with "could not be decoded" so nothing is lost silently.
+
+When the station records, each line ends with `[recording: ...]`, the 15-minute
+MP3 that holds the audio, so you can match an alert to what was actually aired:
+
+```
+[2026-10-22 15:07:44] EAS attention tone heard on WLSU (SAME header decoded) [recording: recordings/WLSU/2026/10/22/261022_150000_WLSU.mp3]
+[2026-10-22 15:07:49] EAS message on WLSU: Required Weekly Test (RWT) for Louisiana, county 071 (FIPS 22071), from WLSU [ZCZC-CIV-RWT-022071+0015-2952106-WLSU-] [recording: recordings/WLSU/2026/10/22/261022_150000_WLSU.mp3]
+```
+
+The tone line can come a few seconds before the message line, because the three
+header bursts are compared before the message is reported. A tone with
+`(no SAME header decoded)` means the digital header wasn't received cleanly.
 
 Tune the tone thresholds with the constants at the top of `tuner.py`
 (`EAS_TONE_RATIO`, `EAS_HOLD_SECS`, `EAS_COOLDOWN_SECS`).

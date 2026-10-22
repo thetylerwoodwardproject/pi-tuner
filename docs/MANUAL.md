@@ -429,9 +429,10 @@ United States.
 
 **Accuracy.** Each header is sent three times. Pi-Tuner reads every copy,
 collects the valid ones for five seconds and reports the **most common** copy,
-which repairs most reception errors. A header that doesn't parse cleanly (bad
-format, impossible day, hour or minute, wrong characters) is thrown away and
-never reported. The same message isn't reported again for two minutes.
+which repairs most reception errors. A header with a bad format or wrong
+characters is thrown away. One with the right shape but impossible values
+(day, hour or minute) is never emailed, but its raw text is written to the EAS
+logs. The same message isn't reported again for two minutes.
 
 **What you get for a decoded header**
 
@@ -477,6 +478,33 @@ gathered) and `SAME_DUP_SECS` (the repeat-suppression time).
 | `ALERT_EAS=true` | `smtp.conf` | Run detection and decode for email (needs email enabled) |
 
 Set both to `false` and the detector isn't started at all.
+
+### EAS logs
+
+Every EAS event is written to disk, whether or not Zabbix or email is set up to
+report it (the detector runs when either is on). Each station keeps its own log,
+`eas-NAME.log` (for example `eas-WLSU.log`, `eas-WXJ86.log`), and everything is
+also collected in `eas.log`. Both are in `/var/log/pituner/` and rotate with the
+other logs. Each station's log gets:
+
+- the **attention tone**, saying whether a SAME header was decoded with it;
+- the **decoded SAME message**: event code and name (`RWT`, `RMT`, `TOR`, `SVR`
+  and so on), areas, sender and the raw header;
+- the **end-of-message** marker;
+- a SAME header that matched the format but failed validation (bit errors), kept
+  as raw text with "could not be decoded" so nothing is lost silently.
+
+When the station records, each line ends with `[recording: ...]`, the 15-minute
+MP3 that holds the audio, so you can match an alert to what was actually aired:
+
+```
+[2026-10-22 15:07:44] EAS attention tone heard on WLSU (SAME header decoded) [recording: recordings/WLSU/2026/10/22/261022_150000_WLSU.mp3]
+[2026-10-22 15:07:49] EAS message on WLSU: Required Weekly Test (RWT) for Louisiana, county 071 (FIPS 22071), from WLSU [ZCZC-CIV-RWT-022071+0015-2952106-WLSU-] [recording: recordings/WLSU/2026/10/22/261022_150000_WLSU.mp3]
+```
+
+The tone line can come a few seconds before the message line, because the three
+header bursts are compared before the message is reported. A tone with
+`(no SAME header decoded)` means the digital header wasn't received cleanly.
 
 ## 13. Email alerts
 
@@ -680,7 +708,7 @@ and `tests/` (`python3 -m unittest discover -s tests`).
 | No recordings | Is `RECORD=true` set and reloaded? `tail /var/log/pituner/recordings.log`; `df -h` |
 | No `RBDS.log` | FM station with both `RBDS=true` and `RECORD=true`? Is `redsea` installed? |
 | No alert emails | `sudo pituner test-email`; `tail /var/log/pituner/email.log` |
-| EAS tone email but no decoded message | The header wasn't received cleanly. Improve the antenna or `GAIN`; check `eas.log` |
+| EAS tone email but no decoded message | The header wasn't received cleanly. Improve the antenna or `GAIN`; check `eas-NAME.log` (the tone line says whether a header was decoded) |
 | No EAS emails at all | `ALERT_EAS=true` and email `ENABLED=true` in `smtp.conf`, or `EAS_DETECT=true` with Zabbix enabled; restart the service |
 | Duplicate EAS emails | The same alert is suppressed for 2 minutes; a different message or a repeat after that sends again |
 
