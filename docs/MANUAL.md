@@ -355,7 +355,7 @@ alerts on, you are warned when free space drops below `DISK_MIN_GB`.
 
 The installer can share `/opt/pituner/recordings` as a read-only SMB share with
 no login (it offers this on a fresh install and on an upgrade, and installs
-Samba if needed). Open `\\\\pituner\\recordings` on Windows, or
+Samba if needed). Open `\\pituner\recordings` on Windows, or
 `smb://pituner/recordings` on macOS and Linux. The share runs as the `pituner`
 user, so nothing else under `/opt/pituner` is exposed, and it cannot be written
 to. You can limit it to your LAN, e.g. `192.168.1.0/24`, when the installer asks.
