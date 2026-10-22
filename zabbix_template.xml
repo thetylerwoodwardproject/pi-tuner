@@ -102,7 +102,7 @@
                             <history>7d</history>
                             <trends>0</trends>
                             <value_type>CHAR</value_type>
-                            <description>Pipeline state: streaming, down, serial_not_found or stopped</description>
+                            <description>Pipeline state: streaming, down, serial_not_found, no_audio or stopped</description>
                             <trigger_prototypes>
                                 <trigger_prototype>
                                     <uuid>fe3fabe515034564836a7b51bcfe416d</uuid>
@@ -110,6 +110,13 @@
                                     <name>{#NAME} serial not found</name>
                                     <priority>HIGH</priority>
                                     <description>The tuner's configured dongle serial is not present on any connected device.</description>
+                                </trigger_prototype>
+                                <trigger_prototype>
+                                    <uuid>b7d3c1a94e2f4a6d8c05f1e9a2b46d37</uuid>
+                                    <expression>find(/Pi-Tuner/pituner.tuner.state[{#TUNER}],#1,"like","no_audio")=1</expression>
+                                    <name>{#NAME} has no audio</name>
+                                    <priority>HIGH</priority>
+                                    <description>The dongle opened but delivers no samples, so nothing reaches Icecast. Check its USB port and power, or replace the dongle.</description>
                                 </trigger_prototype>
                             </trigger_prototypes>
                         </item_prototype>

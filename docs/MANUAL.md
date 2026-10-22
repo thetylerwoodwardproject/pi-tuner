@@ -509,7 +509,7 @@ the station name is in each item's name.
 
 | Item (`pituner.tuner.<name>[tunerN]`) | What it is |
 |------|------|
-| `state`, `up` | streaming / down / serial_not_found / stopped, and 1 or 0 |
+| `state`, `up` | streaming / down / serial_not_found / no_audio / stopped, and 1 or 0 |
 | `name`, `band`, `frequency`, `mount`, `serial` | station name, fm or wx, MHz, Icecast mount, dongle serial |
 | `genre` | the Icecast genre: the RBDS program type, `Radio` or `Weather` |
 | `rbds.rt`, `rbds.ps` | the current RBDS RadioText and station name |
