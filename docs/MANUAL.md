@@ -368,7 +368,7 @@ confirms two in a row. On detection it:
 - sets `pituner.eas = 1` (that tuner's `eas` item and the host-wide one) in
   Zabbix for about 10 seconds, then back to `0`, so a `last()=1` trigger fires
   and recovers;
-- logs the detection in `eas.log` and sends a `pituner.event`;
+- logs the detection in `eas.log` and in that station's `eas-NAME.log`, and sends a `pituner.event`;
 - sends a tone email, unless a SAME email already covers the alert (below).
 
 After a detection it ignores the tone for 60 seconds so one alert gives one
@@ -426,7 +426,7 @@ never reported. The same message isn't reported again for two minutes.
   ```
 
 - A `pituner.event` item in Zabbix with a one-line summary.
-- A line in `eas.log` with the summary and the raw header.
+- A line in `eas.log` and in the station's `eas-NAME.log` with the summary and the raw header.
 
 Counties are shown as their 3-digit FIPS code, for example
 `Louisiana, county 071 (FIPS 22071)`. States and event types are named. The
@@ -550,7 +550,8 @@ Rotating logs are kept under `/var/www/pituner/`:
 | File | Contents |
 |------|----------|
 | `tuner.log` | Tuner health: station status changes, restarts, reloads |
-| `eas.log` | EAS attention-tone detections, decoded SAME messages and end-of-message markers |
+| `eas.log` | EAS attention-tone detections, decoded SAME messages and end-of-message markers, all stations |
+| `eas-NAME.log` | The same events for one station, e.g. `eas-WLSU.log`, so each tuner keeps its own history |
 | `zabbix.log` | Mirror of what is sent to Zabbix (events only, not status snapshots) |
 | `rbds.log` | RBDS now-playing updates sent to Icecast, and any update failures |
 | `recordings.log` | Recording problems (disk full, encoder errors) |

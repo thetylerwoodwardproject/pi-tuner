@@ -571,7 +571,8 @@ The Pi also keeps rotating logs on disk under `/var/www/pituner/`:
 | File         | Contents                                                             |
 |--------------|----------------------------------------------------------------------|
 | `tuner.log`  | Tuner health: station status changes, restarts, reloads             |
-| `eas.log`    | EAS attention-tone detections and decoded SAME messages              |
+| `eas.log`    | EAS attention-tone detections and decoded SAME messages, all stations |
+| `eas-NAME.log` | The same events for one station (e.g. `eas-WLSU.log`)              |
 | `zabbix.log` | Mirror of what's sent to Zabbix (events only, not status snapshots)  |
 | `rbds.log`   | RBDS now-playing updates sent to Icecast, and any update failures    |
 | `recordings.log` | Recording problems (disk full, encoder errors)                   |

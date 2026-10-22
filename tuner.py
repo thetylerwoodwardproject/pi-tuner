@@ -1561,6 +1561,19 @@ class SameCollector:
         return best
 
 
+def eas_log_name(name):
+    """Per-station EAS log: eas-NAME.log (spaces and odd characters dropped)."""
+    return f"eas-{_rec_name(name)}.log"
+
+
+def log_eas(name, msg):
+    """Record an EAS event in the combined eas.log and the station's own
+    eas-NAME.log, so each tuner keeps its own history. Best-effort like
+    log_file; both files sit under LOG_DIR and rotate with the other logs."""
+    log_file("eas.log", msg)
+    log_file(eas_log_name(name), msg)
+
+
 def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
     """Read s16le PCM from stdin; pulse a Zabbix item on the EAS tone and
     decode/report the SAME header that precedes it.
@@ -1587,7 +1600,7 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
         summary = same_summary(info)
         msg = f"EAS message on {name}: {summary}"
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
-        log_file("eas.log", f"{msg} [{header}]")
+        log_eas(name, f"{msg} [{header}]")
         if zbx.enabled:
             zbx.send([(zbx.key_event, msg)])
         if mailer.alert_eas:
@@ -1612,7 +1625,7 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
             if kind == "header":
                 collector.add(text, now)
             else:
-                log_file("eas.log", f"EAS end of message heard on {name}")
+                log_eas(name, f"EAS end of message heard on {name}")
         header = collector.poll(now)
         if header:
             report_same(header, now)
@@ -1632,7 +1645,7 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
             msg = f"EAS attention tone heard on {name}"
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}",
                   file=sys.stderr, flush=True)
-            log_file("eas.log", msg)
+            log_eas(name, msg)
             if zbx.enabled:
                 zbx.send(eas_items(1) + [(zbx.key_event, msg)])
             # A decoded SAME email already covers this alert; send the bare

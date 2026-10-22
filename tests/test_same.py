@@ -168,6 +168,34 @@ class DetectorTests(unittest.TestCase):
         logged = " ".join(str(c.args) for c in lf.call_args_list)
         self.assertIn("Tornado Warning", logged)
 
+    def test_events_are_logged_per_station_and_combined(self):
+        rate = 25000
+        now = datetime.datetime.now(UTC)
+        stamp = f"{now.timetuple().tm_yday:03d}{now.hour:02d}{now.minute:02d}"
+        header = f"ZCZC-WXR-TOR-022071+0030-{stamp}-KLOX/NWS-"
+        pcm = same_audio.burst_stream(header, rate) + self.tone(rate, 3)
+        _, lf = self.run_detector(pcm, rate)
+        files = {}
+        for c in lf.call_args_list:
+            files.setdefault(c.args[0], []).append(c.args[1])
+        self.assertEqual(set(files), {"eas.log", "eas-WLSU.log"})
+        self.assertEqual(files["eas.log"], files["eas-WLSU.log"])
+        joined = " ".join(files["eas-WLSU.log"])
+        self.assertIn("Tornado Warning", joined)
+        self.assertIn("attention tone heard on WLSU", joined)
+
+    def test_station_log_name_is_filesystem_safe(self):
+        self.assertEqual(tuner.eas_log_name("WLSU"), "eas-WLSU.log")
+        self.assertEqual(tuner.eas_log_name("My Station/../x"), "eas-My_Station..x.log")
+
+    def test_logrotate_covers_the_station_logs(self):
+        import fnmatch
+        root = os.path.join(os.path.dirname(__file__), "..")
+        with open(os.path.join(root, "logrotate.conf")) as f:
+            globs = [l.split("{")[0].strip() for l in f if l.strip().startswith("/")]
+        path = os.path.join(tuner.LOG_DIR, tuner.eas_log_name("WLSU"))
+        self.assertTrue(any(fnmatch.fnmatch(path, g) for g in globs), globs)
+
     def test_tone_alone_still_sends_the_tone_email(self):
         fake, _ = self.run_detector(self.tone(8000, 3), 8000)
         self.assertEqual([s for s, _ in fake.sent], ["EAS attention tone heard on WLSU"])
