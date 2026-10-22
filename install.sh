@@ -825,9 +825,16 @@ fi
 # everything else stay private. Runs in its own server block on its own port, so
 # it never touches an existing Nginx site.
 WEB_CONF="${WEB_CONF:-/etc/nginx/conf.d/pituner-recordings.conf}"
+NGINX_SITES_ENABLED="${NGINX_SITES_ENABLED:-/etc/nginx/sites-enabled}"
 web_wanted=0
-web_port="8080"
 web_allow=""
+# If Nginx isn't installed we install it, so port 80 is free for us to use;
+# with an existing Nginx, stay off the ports its sites may already own.
+nginx_present=0
+if command -v nginx >/dev/null 2>&1; then nginx_present=1; fi
+web_default_port="8080"
+if [ "${nginx_present}" = "0" ]; then web_default_port="80"; fi
+web_port="${web_default_port}"
 if [ -f "${WEB_CONF}" ]; then
   web_wanted=1
   web_port="$(sed -n 's/^[[:space:]]*listen \([0-9]*\);.*/\1/p' "${WEB_CONF}" | head -n1)"
@@ -835,17 +842,19 @@ if [ -f "${WEB_CONF}" ]; then
   info "The recordings web listing is already set up; refreshing it."
 elif [ "${INTERACTIVE}" = "1" ] && confirm "Serve the recordings in a web browser (read-only, no login)?"; then
   web_wanted=1
-  web_port=$(ask "  Port" "8080")
+  web_port=$(ask "  Port" "${web_default_port}")
   web_allow=$(ask "  Limit access to this network, e.g. 192.168.1.0/24 (blank = anyone who can reach the Pi)" "")
 elif [ "${PITUNER_WEB_RECORDINGS:-}" = "1" ]; then     # unattended opt-in
   web_wanted=1
-  web_port="${PITUNER_WEB_PORT:-8080}"
+  web_port="${PITUNER_WEB_PORT:-${web_default_port}}"
   web_allow="${PITUNER_WEB_ALLOW:-}"
 fi
+# An explicit port always wins, even when refreshing an existing listing.
+if [ "${web_wanted}" = "1" ] && [ -n "${PITUNER_WEB_PORT:-}" ]; then web_port="${PITUNER_WEB_PORT}"; fi
 case "${web_port}" in
-  ''|*[!0-9]*) warn "'${web_port}' is not a valid port, using 8080."; web_port="8080" ;;
+  ''|*[!0-9]*) warn "'${web_port}' is not a valid port, using ${web_default_port}."; web_port="${web_default_port}" ;;
   *) if [ "${web_port}" -lt 1 ] || [ "${web_port}" -gt 65535 ]; then
-       warn "'${web_port}' is not a valid port, using 8080."; web_port="8080"
+       warn "'${web_port}' is not a valid port, using ${web_default_port}."; web_port="${web_default_port}"
      fi ;;
 esac
 case "${web_allow}" in
@@ -857,6 +866,13 @@ if [ "${web_wanted}" = "1" ] && ! command -v nginx >/dev/null 2>&1; then
     || { warn "Could not install Nginx; the recordings web listing was not set up."; web_wanted=0; }
 fi
 if [ "${web_wanted}" = "1" ]; then
+  # A fresh Nginx ships Debian's welcome site as the default server on port 80,
+  # which would answer instead of ours. Drop it, but only when we just installed
+  # Nginx (so it can't be something the user set up).
+  if [ "${web_port}" = "80" ] && [ "${nginx_present}" = "0" ] && [ -e "${NGINX_SITES_ENABLED}/default" ]; then
+    rm -f "${NGINX_SITES_ENABLED}/default"
+    info "Disabled Nginx's default welcome site so the recordings can use port 80."
+  fi
   mkdir -p "$(dirname "${WEB_CONF}")" "${APP_DIR}/recordings"
   # The web server runs as www-data: let it walk to the recordings, nothing more.
   chmod o+x "${APP_DIR}" 2>/dev/null || true
@@ -894,7 +910,8 @@ if [ "${web_wanted}" = "1" ]; then
     if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
       ufw allow "${web_port}/tcp" >/dev/null 2>&1 || true
     fi
-    ok "Recordings are browsable, read-only, at http://$(hostname):${web_port}/"
+    if [ "${web_port}" = "80" ]; then web_url="http://$(hostname)/"; else web_url="http://$(hostname):${web_port}/"; fi
+    ok "Recordings are browsable, read-only, at ${web_url}"
     if [ -n "${web_allow}" ]; then info "Access is limited to ${web_allow}."; fi
   else
     warn "Nginx did not accept the new config, so it was removed again (see: sudo nginx -t)."

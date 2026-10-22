@@ -355,20 +355,25 @@ alerts on, you are warned when free space drops below `DISK_MIN_GB`.
 
 The installer can serve `/opt/pituner/recordings` as a read-only web listing
 with no login (it offers this on a fresh install and on an upgrade, and installs
-Nginx if needed). Open `http://pituner:8080/` and click through station, year,
+Nginx if needed). Open `http://pituner/` (or `http://pituner:PORT/` if you chose another port) and click through station, year,
 month and day; MP3s play in the browser and can be downloaded or seeked.
 
-- It runs in its own Nginx server block (`/etc/nginx/conf.d/pituner-recordings.conf`)
-  on its own port (default 8080), so existing Nginx sites are untouched.
+- It runs in its own Nginx server block (`/etc/nginx/conf.d/pituner-recordings.conf`).
+  If the installer has to install Nginx, the default port is **80**, and it
+  disables Debian's welcome site (which would otherwise answer instead). If Nginx
+  was already installed the default is **8080** and none of your sites are touched;
+  you can still pick 80, but an existing default site on port 80 will answer
+  first, so move or remove it yourself.
 - Only the recordings folder is served. Configuration, logs and everything else
   stay private; dotfiles are blocked, and anything other than GET and HEAD is refused.
 - You can limit it to your LAN, e.g. `192.168.1.0/24`, when the installer asks.
   Without a limit, anyone who can reach the Pi can browse the recordings.
 - If ufw is active the port is opened. Nginx's own request log for the listing is
   `/var/log/nginx/pituner-recordings.access.log`.
-- Unattended: `PITUNER_WEB_RECORDINGS=1 PITUNER_WEB_PORT=8080 PITUNER_WEB_ALLOW=192.168.1.0/24 sudo ./install.sh`.
-- To change the port or network later, run the installer again (it refreshes the
-  listing and keeps your values) or edit the conf file and `sudo systemctl reload nginx`.
+- Unattended: `PITUNER_WEB_RECORDINGS=1 PITUNER_WEB_PORT=80 PITUNER_WEB_ALLOW=192.168.1.0/24 sudo ./install.sh`.
+- To change the port or network later, run the installer again with
+  `PITUNER_WEB_PORT=...` / `PITUNER_WEB_ALLOW=...` (it refreshes the listing and
+  keeps what you don't override) or edit the conf file and `sudo systemctl reload nginx`.
 
 ## 12. EAS alerts: tone detection and SAME decoding
 
