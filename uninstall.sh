@@ -151,14 +151,16 @@ fi
 step "Remove log rotation and log files"
 rm -f /etc/logrotate.d/pituner
 ok "Removed /etc/logrotate.d/pituner."
-if [ -d "/var/www/pituner" ]; then
-  if confirm "Delete /var/www/pituner (the local logs)?"; then
-    rm -rf /var/www/pituner
-    ok "Removed /var/www/pituner."
-  else
-    info "Kept /var/www/pituner."
+for logdir in /var/log/pituner /var/www/pituner; do   # the second is where older versions logged
+  if [ -d "${logdir}" ]; then
+    if confirm "Delete ${logdir} (the local logs)?"; then
+      rm -rf "${logdir}"
+      ok "Removed ${logdir}."
+    else
+      info "Kept ${logdir}."
+    fi
   fi
-fi
+done
 
 # ------------------------------------------------------------- done
 echo ""

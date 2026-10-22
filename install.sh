@@ -521,9 +521,17 @@ chown -R pituner:pituner "${APP_DIR}"
 chmod 600 "${APP_DIR}/icecast.conf"
 
 # Local rotating logs (tuner health / EAS / Zabbix mirror).
-LOG_DIR="/var/www/pituner"
+LOG_DIR="/var/log/pituner"
+OLD_LOG_DIR="/var/www/pituner"      # earlier versions kept the logs here
 mkdir -p "${LOG_DIR}"
-chown pituner:pituner "${LOG_DIR}"
+if [ -d "${OLD_LOG_DIR}" ]; then
+  # Carry the existing logs (and rotated copies) over; never overwrite.
+  find "${OLD_LOG_DIR}" -maxdepth 1 -type f -name '*.log*' -exec mv -n {} "${LOG_DIR}/" \; 2>/dev/null || true
+  rmdir "${OLD_LOG_DIR}" 2>/dev/null || true
+  [ -d "${OLD_LOG_DIR}" ] && warn "${OLD_LOG_DIR} still has files; logs now go to ${LOG_DIR}."
+fi
+chown -R pituner:pituner "${LOG_DIR}"
+chmod 755 "${LOG_DIR}"
 [ -f "${SRC}/logrotate.conf" ] && install -m 644 "${SRC}/logrotate.conf" /etc/logrotate.d/pituner
 ok "Log directory ${LOG_DIR} and logrotate config installed."
 

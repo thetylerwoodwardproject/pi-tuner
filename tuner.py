@@ -74,7 +74,7 @@ import urllib.request
 
 DEFAULT_DIR = "/opt/pituner"
 TUNER_PATH = os.path.realpath(os.path.abspath(__file__))
-LOG_DIR = "/var/www/pituner"
+LOG_DIR = "/var/log/pituner"
 WX_GENRE = "Weather"
 FM_DEFAULT_GENRE = "Radio"
 REC_CHUNK_SECS = 900
@@ -93,7 +93,7 @@ _log_failed = set()
 
 
 def log_file(name, msg):
-    """Append a timestamped line to /var/www/pituner/<name>. Best-effort.
+    """Append a timestamped line to /var/log/pituner/<name>. Best-effort.
 
     A failure never interrupts tuning, but it is reported once per file on
     stderr (journalctl -u pituner) so unwritable logs aren't silently blank."""

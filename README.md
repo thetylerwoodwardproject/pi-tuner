@@ -491,7 +491,7 @@ rtl_fm ──┬──▶ demux ──▶ ffmpeg ──▶ Icecast  (audio)
   and are always `Weather`.
 
 To check it, open `http://<pi>:8000/status-json.xsl` (see `title` and `genre` on
-the mount) or `tail -f /var/www/pituner/rbds.log`.
+the mount) or `tail -f /var/log/pituner/rbds.log`.
 
 Notes:
 
@@ -556,17 +556,18 @@ For example:
 | Config doesn't parse             | `tuner.py --dir /opt/pituner --check`              |
 | No audio / stream missing        | `http://<pi>:8000/status-json.xsl` in a browser    |
 | Changes didn't apply             | `sudo systemctl reload pituner.service`            |
-| No now-playing text              | `which redsea`, then `tail /var/www/pituner/rbds.log` |
+| No now-playing text              | `which redsea`, then `tail /var/log/pituner/rbds.log` |
 | FM genre is just `Radio`         | No PTY heard; check `journalctl -u pituner` for `RBDS PTY:` |
-| No recordings                    | `RECORD=true` set and reloaded? `tail /var/www/pituner/recordings.log`; `df -h` |
+| No recordings                    | `RECORD=true` set and reloaded? `tail /var/log/pituner/recordings.log`; `df -h` |
 | No `RBDS.log`                    | FM station with both `RBDS=true` and `RECORD=true`? Is `redsea` installed? |
-| No alert emails                  | `sudo python3 /opt/pituner/tuner.py test-email --dir /opt/pituner`; `tail /var/www/pituner/email.log` |
+| No alert emails                  | `sudo python3 /opt/pituner/tuner.py test-email --dir /opt/pituner`; `tail /var/log/pituner/email.log` |
 
 The service restarts any station whose pipeline dies, backing off between attempts.
 
 ## Local logs
 
-The Pi also keeps rotating logs on disk under `/var/www/pituner/`:
+The Pi also keeps rotating logs on disk under `/var/log/pituner/`:
+(Older versions logged to `/var/www/pituner/`; the installer moves existing logs over.)
 
 | File         | Contents                                                             |
 |--------------|----------------------------------------------------------------------|

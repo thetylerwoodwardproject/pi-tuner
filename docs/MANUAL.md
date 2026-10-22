@@ -294,7 +294,7 @@ rtl_fm ──┬──▶ demux ──▶ ffmpeg ──▶ Icecast  (audio)
   `RBDS=true`, the genre is `Radio`. WX stations are always `Weather`.
 
 Check it at `http://<pi>:8000/status-json.xsl` (see `title` and `genre`) or with
-`tail -f /var/www/pituner/rbds.log`.
+`tail -f /var/log/pituner/rbds.log`.
 
 RBDS needs a clean signal. Some stations send only a PS, or ads and slogans in
 RT; Pi-Tuner shows whatever is sent. Without `redsea` installed, a station with
@@ -545,7 +545,7 @@ An unreachable Zabbix never affects tuning; sends are best-effort and logged.
 
 ## 15. Logs
 
-Rotating logs are kept under `/var/www/pituner/`:
+Rotating logs are kept under `/var/log/pituner/`: (older versions used `/var/www/pituner/`; the installer moves existing logs over)
 
 | File | Contents |
 |------|----------|
@@ -636,7 +636,7 @@ All files live in `/opt/pituner/` and use `KEY=value` lines. Comments start with
 /etc/systemd/system/pituner.service   # systemd unit
 /usr/local/bin/pituner                # the `pituner` command
 /usr/local/bin/demux, redsea          # FM stereo and RBDS decoders
-/var/www/pituner/                     # logs
+/var/log/pituner/                     # logs
 ```
 
 The repository also has `install.sh`, `uninstall.sh`, `logrotate.conf`, `docs/`
@@ -651,11 +651,11 @@ and `tests/` (`python3 -m unittest discover -s tests`).
 | Config doesn't parse | `sudo pituner check` |
 | No audio, or stream missing | `http://<pi>:8000/status-json.xsl` in a browser |
 | Changes didn't apply | `sudo systemctl reload pituner.service` (restart for Zabbix and email changes) |
-| No now-playing text | `which redsea`, then `tail /var/www/pituner/rbds.log` |
+| No now-playing text | `which redsea`, then `tail /var/log/pituner/rbds.log` |
 | FM genre is just `Radio` | No PTY heard; look for `RBDS PTY:` in `journalctl -u pituner` |
-| No recordings | Is `RECORD=true` set and reloaded? `tail /var/www/pituner/recordings.log`; `df -h` |
+| No recordings | Is `RECORD=true` set and reloaded? `tail /var/log/pituner/recordings.log`; `df -h` |
 | No `RBDS.log` | FM station with both `RBDS=true` and `RECORD=true`? Is `redsea` installed? |
-| No alert emails | `sudo pituner test-email`; `tail /var/www/pituner/email.log` |
+| No alert emails | `sudo pituner test-email`; `tail /var/log/pituner/email.log` |
 | EAS tone email but no decoded message | The header wasn't received cleanly. Improve the antenna or `GAIN`; check `eas.log` |
 | No EAS emails at all | `ALERT_EAS=true` and email `ENABLED=true` in `smtp.conf`, or `EAS_DETECT=true` with Zabbix enabled; restart the service |
 | Duplicate EAS emails | The same alert is suppressed for 2 minutes; a different message or a repeat after that sends again |
