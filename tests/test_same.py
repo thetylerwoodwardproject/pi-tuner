@@ -204,6 +204,31 @@ class DetectorTests(unittest.TestCase):
         self.assertTrue(any("could not be decoded" in m and header in m for _, m in logged), logged)
         self.assertEqual({n for n, _ in logged}, {"eas.log", "eas-WLSU.log"})
 
+    def test_log_lines_point_at_the_recording(self):
+        rate = 25000
+        now = datetime.datetime.now(UTC)
+        stamp = f"{now.timetuple().tm_yday:03d}{now.hour:02d}{now.minute:02d}"
+        header = f"ZCZC-CIV-RWT-022071+0015-{stamp}-WLSU-"
+        pcm = same_audio.burst_stream(header, rate) + self.tone(rate, 3)
+        rec = "recordings/WLSU/2026/10/22/261022_150000_WLSU.mp3"
+        with mock.patch.object(tuner, "recording_covering", return_value=rec):
+            _, lf = self.run_detector(pcm, rate)
+        lines = [c.args[1] for c in lf.call_args_list if c.args[0] == "eas-WLSU.log"]
+        self.assertTrue(lines and all(l.endswith(f"[recording: {rec}]") for l in lines), lines)
+        self.assertTrue(any("Required Weekly Test" in l for l in lines))
+
+    def test_recording_covering_picks_the_file_in_progress(self):
+        with tempfile.TemporaryDirectory() as d:
+            when = time.mktime((2026, 10, 22, 15, 7, 30, 0, 0, -1))
+            day = os.path.join(d, "recordings", "WLSU", "2026", "10", "22")
+            os.makedirs(day)
+            for n in ("261022_144500_WLSU.mp3", "261022_150000_WLSU.mp3", "261022_151500_WLSU.mp3"):
+                open(os.path.join(day, n), "w").close()
+            self.assertEqual(tuner.recording_covering(d, "WLSU", when),
+                             os.path.join("recordings", "WLSU", "2026", "10", "22",
+                                          "261022_150000_WLSU.mp3"))
+            self.assertEqual(tuner.recording_covering(d, "NOPE", when), "")
+
     def test_station_log_name_is_filesystem_safe(self):
         self.assertEqual(tuner.eas_log_name("WLSU"), "eas-WLSU.log")
         self.assertEqual(tuner.eas_log_name("My Station/../x"), "eas-My_Station..x.log")

@@ -551,7 +551,7 @@ Rotating logs are kept under `/var/www/pituner/`:
 |------|----------|
 | `tuner.log` | Tuner health: station status changes, restarts, reloads |
 | `eas.log` | EAS attention-tone detections, decoded SAME messages and end-of-message markers, all stations |
-| `eas-NAME.log` | The same events for one station, e.g. `eas-WLSU.log`, so each tuner keeps its own history |
+| `eas-NAME.log` | The same events for one station, e.g. `eas-WLSU.log`, so each tuner keeps its own history. Each line ends with `[recording: ...]`, the MP3 (when the station records) that holds the audio, so you can confirm the alert aired |
 | `zabbix.log` | Mirror of what is sent to Zabbix (events only, not status snapshots) |
 | `rbds.log` | RBDS now-playing updates sent to Icecast, and any update failures |
 | `recordings.log` | Recording problems (disk full, encoder errors) |

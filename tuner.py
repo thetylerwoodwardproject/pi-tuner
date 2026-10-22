@@ -1561,6 +1561,20 @@ class SameCollector:
         return best
 
 
+def recording_covering(base_dir, name, when):
+    """Path (relative to ``base_dir``) of the station's MP3 that holds the audio
+    at ``when`` (epoch seconds): the newest file started at or before it, in
+    that day's folder. "" if the station isn't recording or nothing matches."""
+    path = recording_path(base_dir, name, when)
+    day = os.path.dirname(path)
+    stamp = os.path.basename(path)[:13]        # YYMMDD_HHMMSS of ``when``
+    try:
+        names = [n for n in os.listdir(day) if n.endswith(".mp3") and n[:13] <= stamp]
+    except OSError:
+        return ""
+    return os.path.relpath(os.path.join(day, max(names)), base_dir) if names else ""
+
+
 def eas_log_name(name):
     """Per-station EAS log: eas-NAME.log (spaces and odd characters dropped)."""
     return f"eas-{_rec_name(name)}.log"
@@ -1583,6 +1597,12 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
     """
     zbx = ZabbixSender(parse_keyvalue(os.path.join(base_dir, "zabbix.conf")))
     mailer = Mailer(parse_keyvalue(os.path.join(base_dir, "smtp.conf")))
+
+    def on_record(msg, when):
+        """Log line plus the recording that holds this audio, if there is one."""
+        rec = recording_covering(base_dir, name, when)
+        log_eas(name, f"{msg} [recording: {rec}]" if rec else msg)
+
     same = SameDecoder(sample_rate)
     collector = SameCollector()
 
@@ -1600,12 +1620,12 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
             # valid message; keep the raw text rather than losing the alert.
             msg = f"SAME header heard on {name} but could not be decoded [{header}]"
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
-            log_eas(name, msg)
+            on_record(msg, now)
             return
         summary = same_summary(info)
         msg = f"EAS message on {name}: {summary}"
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
-        log_eas(name, f"{msg} [{header}]")
+        on_record(f"{msg} [{header}]", now)
         if zbx.enabled:
             zbx.send([(zbx.key_event, msg)])
         if mailer.alert_eas:
@@ -1630,7 +1650,7 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
             if kind == "header":
                 collector.add(text, now)
             else:
-                log_eas(name, f"EAS end of message heard on {name}")
+                on_record(f"EAS end of message heard on {name}", now)
         header = collector.poll(now)
         if header:
             report_same(header, now)
@@ -1650,8 +1670,8 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
             msg = f"EAS attention tone heard on {name}"
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}",
                   file=sys.stderr, flush=True)
-            log_eas(name, msg + (" (SAME header decoded)" if collector.recent(now)
-                                 else " (no SAME header decoded)"))
+            on_record(msg + (" (SAME header decoded)" if collector.recent(now)
+                             else " (no SAME header decoded)"), now)
             if zbx.enabled:
                 zbx.send(eas_items(1) + [(zbx.key_event, msg)])
             # A decoded SAME email already covers this alert; send the bare
