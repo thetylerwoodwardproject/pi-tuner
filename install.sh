@@ -328,6 +328,122 @@ fi
 # ------------------------------------------------------------- icecast
 step "3 of 8: Configure Icecast"
 ICECAST_XML="/etc/icecast2/icecast.xml"
+ICECAST_BACKUP="${APP_DIR}/icecast.xml.backup"     # last known-good copy, kept with the app
+ICECAST_DEFAULTS="/etc/default/icecast2"
+ICECAST_CREATED=0
+
+# Write a complete, working icecast.xml (used when the file is missing, e.g. after
+# the old Icecast package was removed/purged). $1 = source password, $2 = admin password.
+write_icecast_xml() {
+  mkdir -p "$(dirname "${ICECAST_XML}")"
+  cat > "${ICECAST_XML}" <<XML
+<icecast>
+    <location>Pi-Tuner</location>
+    <admin>admin@localhost</admin>
+
+    <limits>
+        <clients>100</clients>
+        <sources>20</sources>
+        <queue-size>524288</queue-size>
+        <client-timeout>30</client-timeout>
+        <header-timeout>15</header-timeout>
+        <source-timeout>10</source-timeout>
+        <burst-on-connect>1</burst-on-connect>
+        <burst-size>65535</burst-size>
+    </limits>
+
+    <authentication>
+        <source-password>$1</source-password>
+        <relay-password>$2</relay-password>
+        <admin-user>admin</admin-user>
+        <admin-password>$2</admin-password>
+    </authentication>
+
+    <hostname>localhost</hostname>
+
+    <listen-socket>
+        <port>8000</port>
+    </listen-socket>
+
+    <fileserve>1</fileserve>
+
+    <paths>
+        <basedir>/usr/share/icecast2</basedir>
+        <logdir>/var/log/icecast2</logdir>
+        <webroot>/usr/share/icecast2/web</webroot>
+        <adminroot>/usr/share/icecast2/admin</adminroot>
+        <alias source="/" destination="/status.xsl"/>
+    </paths>
+
+    <logging>
+        <accesslog>access.log</accesslog>
+        <errorlog>error.log</errorlog>
+        <loglevel>3</loglevel>
+        <logsize>10000</logsize>
+    </logging>
+</icecast>
+XML
+}
+
+# Make sure icecast.xml exists and is readable by the icecast2 service.
+# $1 = "keep" (use SOURCE_PASS as-is) or "fresh" (use the new random passwords).
+ensure_icecast_xml() {
+  if [ ! -f "${ICECAST_XML}" ]; then
+    warn "Icecast config ${ICECAST_XML} is missing (was Icecast removed?). Recreating it."
+    ICECAST_CREATED=1
+    if [ "$1" = "keep" ] && [ -f "${ICECAST_BACKUP}" ]; then
+      mkdir -p "$(dirname "${ICECAST_XML}")"
+      cp "${ICECAST_BACKUP}" "${ICECAST_XML}"
+      [ -n "${SOURCE_PASS}" ] && \
+        sed -i "s|<source-password>.*</source-password>|<source-password>${SOURCE_PASS}</source-password>|" "${ICECAST_XML}"
+      ok "Restored ${ICECAST_XML} from ${ICECAST_BACKUP}."
+    else
+      if [ -z "${SOURCE_PASS}" ]; then
+        SOURCE_PASS="$(gen_pass)"
+        # keep Pi-Tuner's copy of the password in step with the new one
+        [ -f "${APP_DIR}/icecast.conf" ] && \
+          sed -i "s|^SOURCE_PASSWORD=.*|SOURCE_PASSWORD=${SOURCE_PASS}|" "${APP_DIR}/icecast.conf"
+      fi
+      [ -z "${ADMIN_PASS}" ] && ADMIN_PASS="$(gen_pass)"
+      write_icecast_xml "${SOURCE_PASS}" "${ADMIN_PASS}"
+      ok "Created ${ICECAST_XML} with a new source/admin password."
+    fi
+  elif [ "$1" = "fresh" ]; then
+    if grep -q '<source-password>' "${ICECAST_XML}"; then
+      sed -i "s|<source-password>.*</source-password>|<source-password>${SOURCE_PASS}</source-password>|" "${ICECAST_XML}"
+      sed -i "s|<admin-password>.*</admin-password>|<admin-password>${ADMIN_PASS}</admin-password>|" "${ICECAST_XML}"
+      ok "Icecast source/admin password set."
+    else
+      warn "Could not find <source-password> in icecast.xml; leaving Icecast config unchanged."
+    fi
+  fi
+  chown root:icecast "${ICECAST_XML}" 2>/dev/null || true
+  chmod 640 "${ICECAST_XML}" 2>/dev/null || true
+  # Some Debian releases ship /etc/default/icecast2 with ENABLE=false.
+  if [ -f "${ICECAST_DEFAULTS}" ] && grep -q '^ENABLE=false' "${ICECAST_DEFAULTS}"; then
+    sed -i 's/^ENABLE=false/ENABLE=true/' "${ICECAST_DEFAULTS}"
+    info "Enabled Icecast in ${ICECAST_DEFAULTS}."
+  fi
+}
+
+# Wait for Icecast to answer; on success keep a known-good copy of its config.
+check_icecast() {
+  local i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    if curl -sf --max-time 5 http://localhost:8000/status-json.xsl >/dev/null; then
+      ok "Icecast is responding on port 8000."
+      mkdir -p "${APP_DIR}"
+      if install -m 600 "${ICECAST_XML}" "${ICECAST_BACKUP}" 2>/dev/null; then
+        ok "Saved a working copy of the Icecast config to ${ICECAST_BACKUP}."
+      fi
+      return 0
+    fi
+    sleep 1
+  done
+  warn "Icecast is not responding on port 8000 — it will be re-checked at the end."
+  warn "See why:  sudo -u icecast2 icecast2 -c ${ICECAST_XML}"
+  return 1
+}
 
 if [ "${KEEP_SETTINGS}" = "1" ]; then
   info "Keeping your existing Icecast configuration and passwords."
@@ -337,14 +453,15 @@ if [ "${KEEP_SETTINGS}" = "1" ]; then
     [ -n "${SOURCE_PASS}" ] && info "icecast.conf had no password; using the one from ${ICECAST_XML}."
   fi
   ADMIN_PASS=""
+  ensure_icecast_xml keep
   systemctl enable icecast2 >/dev/null 2>&1 || warn "Could not enable icecast2 (may need manual start)."
-  systemctl start icecast2 >/dev/null 2>&1 || warn "Could not start icecast2."
-  sleep 1
-  if curl -sf --max-time 5 http://localhost:8000/status-json.xsl >/dev/null; then
-    ok "Icecast is responding on port 8000."
+  if [ "${ICECAST_CREATED}" = "1" ]; then
+    systemctl restart icecast2 >/dev/null 2>&1 || warn "Could not restart icecast2."
   else
-    warn "Icecast not responding yet — it will be re-checked at the end."
+    systemctl start icecast2 >/dev/null 2>&1 || warn "Could not start icecast2."
   fi
+  sleep 1
+  check_icecast || true
 else
   warn "This resets the Icecast source/admin passwords and restarts Icecast,"
   warn "replacing any existing Icecast settings."
@@ -354,31 +471,14 @@ else
 
   info "Generating a random source password and applying it to Icecast."
 
-  ICECAST_XML="/etc/icecast2/icecast.xml"
   SOURCE_PASS="$(gen_pass)"
   ADMIN_PASS="$(gen_pass)"
-
-  if [ ! -f "${ICECAST_XML}" ]; then
-    warn "Icecast config not found at ${ICECAST_XML}. If you installed Icecast elsewhere,"
-    warn "set the source password manually and update ${APP_DIR}/icecast.conf."
-  else
-    if grep -q '<source-password>' "${ICECAST_XML}"; then
-      sed -i "s|<source-password>.*</source-password>|<source-password>${SOURCE_PASS}</source-password>|" "${ICECAST_XML}"
-      sed -i "s|<admin-password>.*</admin-password>|<admin-password>${ADMIN_PASS}</admin-password>|" "${ICECAST_XML}"
-      ok "Icecast source/admin password set."
-    else
-      warn "Could not find <source-password> in icecast.xml; leaving Icecast config unchanged."
-    fi
-  fi
+  ensure_icecast_xml fresh
 
   systemctl enable icecast2 >/dev/null 2>&1 || warn "Could not enable icecast2 (may need manual start)."
   systemctl restart icecast2 >/dev/null 2>&1 || warn "Could not restart icecast2."
   sleep 1
-  if curl -sf --max-time 5 http://localhost:8000/status-json.xsl >/dev/null; then
-    ok "Icecast is responding on port 8000."
-  else
-    warn "Icecast not responding yet — it will be re-checked at the end."
-  fi
+  check_icecast || true
 fi
 
 # ------------------------------------------------------------- app install
