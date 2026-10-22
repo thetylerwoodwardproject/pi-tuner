@@ -2403,17 +2403,21 @@ class Tuner:
         for st in self.stations:
             st.retry_at = time.time()
             self.start_station(st)
+            sd_notify("WATCHDOG=1")
 
     def run(self):
         self.load_config()
         self.refresh_devices()
+        # Ready as soon as the config is loaded: starting stations (an RBDS scan
+        # takes several seconds each) must not run into systemd's start timeout.
+        sd_notify("READY=1")
         for st in self.stations:
             self.start_station(st)
+            sd_notify("WATCHDOG=1")
         self._next_heartbeat = time.time() + self.zbx.interval
         next_prune = 0.0
         self.running = True
         self.alerts.service_started({st.name: st.status for st in self.stations})
-        sd_notify("READY=1")
         while self.running:
             if self.reload_requested:
                 self.reload_requested = False

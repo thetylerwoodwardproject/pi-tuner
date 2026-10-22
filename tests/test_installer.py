@@ -257,6 +257,252 @@ class AlertsKeepTests(Base):
         self.assertIn("Added to zabbix.conf", r.stdout)
 
 
+class SmbShareTests(Base):
+    BLOCK = block("# ------------------------------------------------------------- recordings share",
+                  '# ------------------------------------------------------------- service')
+    DEFAULT_CONF = "[global]\n   workgroup = WORKGROUP\n\n[printers]\n   path = /var/tmp\n"
+
+    def share(self, conf=DEFAULT_CONF, interactive=1, confirm="y", ask="", testparm_ok=True,
+              have_smbd=True, existing=None):
+        self.conf = os.path.join(self.d, "smb.conf")
+        if conf is not None:
+            write(self.conf, existing if existing is not None else conf)
+        stubs = STUBS + ("testparm() { return %d; }\n" % (0 if testparm_ok else 1)
+                         + 'apt-get() { echo "apt-get $*" >> "$CALLS"; }\n'
+                         + 'hostname() { echo pituner; }\n'
+                         + ("smbd() { :; }\n" if have_smbd else
+                            'command() { if [ "$1" = -v ] && [ "$2" = smbd ]; then return 1; fi; '
+                            'builtin command "$@"; }\n'))
+        script = (stubs + f'APP_DIR="{self.app}"; INTERACTIVE={interactive}; CALLS="{self.calls}"\n'
+                  f'ASK_ANSWER="{ask}"; CONFIRM_ANSWER="{confirm}"; SMB_CONF="{self.conf}"\n'
+                  + self.BLOCK)
+        return run_bash(script)
+
+    def conf_text(self):
+        return read(self.conf) if os.path.exists(self.conf) else ""
+
+    def test_opt_in_writes_a_read_only_guest_share_of_recordings_only(self):
+        r = self.share()
+        self.assertEqual(r.returncode, 0, r.stderr)
+        text = self.conf_text()
+        self.assertIn("[recordings]", text)
+        self.assertIn(f"path = {self.app}/recordings", text)
+        for line in ("read only = yes", "guest ok = yes", "force user = pituner"):
+            self.assertIn(line, text)
+        self.assertNotIn("hosts allow", text)
+        self.assertNotIn("writable = yes", text)
+        self.assertIn("map to guest = Bad User", text)       # no-login clients become guests
+        self.assertIn("workgroup = WORKGROUP", text)         # existing config untouched
+        self.assertIn("SYSTEMCTL restart smbd", self.calls_text())
+        self.assertNotIn("apt-get", self.calls_text())       # smbd already installed
+
+    def test_installs_samba_when_missing(self):
+        self.share(have_smbd=False)
+        self.assertIn("apt-get install -y samba", self.calls_text())
+
+    def test_declining_or_non_interactive_changes_nothing(self):
+        self.share(confirm="n")
+        self.assertEqual(self.conf_text(), self.DEFAULT_CONF)
+        self.share(interactive=0)
+        self.assertEqual(self.conf_text(), self.DEFAULT_CONF)
+
+    def test_does_not_duplicate_map_to_guest_if_already_set(self):
+        self.share(conf="[global]\n   map to guest = never\n")
+        self.assertEqual(self.conf_text().lower().count("map to guest"), 1)
+
+    def test_network_limit_is_written_and_kept_on_refresh(self):
+        self.share(ask="192.168.1.0/24")
+        self.assertIn("hosts allow = 192.168.1.0/24", self.conf_text())
+        r = self.share(interactive=0, existing=self.conf_text())     # re-run: refresh, no prompts
+        text = self.conf_text()
+        self.assertEqual(text.count("[recordings]"), 1)
+        self.assertIn("hosts allow = 192.168.1.0/24", text)
+        self.assertIn("already set up", r.stdout)
+
+    def test_bad_network_value_is_ignored_with_a_warning(self):
+        r = self.share(ask="evil; rm -rf /")
+        self.assertIn("not a valid network list", r.stdout)
+        self.assertNotIn("hosts allow", self.conf_text())
+
+    def test_invalid_samba_config_is_not_installed(self):
+        r = self.share(testparm_ok=False)
+        self.assertEqual(self.conf_text(), self.DEFAULT_CONF)
+        self.assertIn("did not validate", r.stdout)
+
+
+class UninstallTests(unittest.TestCase):
+    """Runs the whole uninstall.sh inside a scratch tree with stubbed system commands."""
+    SCRIPT = read(os.path.join(REPO, "uninstall.sh")).replace('if [ "${EUID}" -ne 0 ]; then', "if false; then")
+
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(self.d, ignore_errors=True))
+        j = lambda *a: os.path.join(self.d, *a)
+        self.p = {k: j(v) for k, v in dict(
+            app="opt/pituner", bin="bin", unit="unit", lr="lr/pituner", bl="modprobe/rtl-sdr-blacklist.conf",
+            ice="icecast2/icecast.xml", smb="samba/smb.conf", ngx="nginx", www="www", log="log",
+            stubs="stubs", calls="calls.txt").items()}
+        for f, c in [
+            ("app/tuner.py", "x"), ("app/recordings/WLSU/2026/10/22/a.mp3", "audio"),
+            ("bin/demux", "x"), ("bin/redsea", "x"), ("bin/pituner", "x"), ("bin/othertool", "keep"),
+            ("unit/pituner.service", "x"), ("unit/other.service", "keep"),
+            ("lr", None), ("bl", "blacklist"),
+            ("ice", "<icecast><source-password>secret</source-password><admin-password>a</admin-password></icecast>"),
+            ("smb", "[global]\n   workgroup = W\n# BEGIN pituner recordings share\n[recordings]\n"
+                    "   path = /opt/pituner/recordings\n# END pituner recordings share\n[printers]\n"),
+            ("ngx/sites-enabled/pituner", "x"), ("ngx/sites-available/pituner", "x"),
+            ("ngx/sites-enabled/mysite", "keep"), ("ngx/conf.d/pi-tuner.conf", "x"),
+            ("www/pituner/tuner.log", "x"), ("www/html/index.html", "keep"),
+            ("log/pituner/tuner.log", "x"), ("log/pi-tuner/old.log", "x"), ("log/pituner.log", "x"),
+            ("log/syslog", "keep"),
+        ]:
+            if c is not None:
+                write(self.p[f.split("/")[0]] + f[len(f.split("/")[0]):], c)
+        write(self.p["lr"], "rotate")
+        os.makedirs(self.p["stubs"])
+        write(os.path.join(self.p["stubs"], "clear"), "#!/bin/sh\nexit 0\n", 0o755)
+        for name in ("systemctl", "userdel", "groupdel", "nginx", "apt-get", "icecast2"):
+            write(os.path.join(self.p["stubs"], name),
+                  f'#!/bin/sh\necho "{name} $*" >> "{self.p["calls"]}"\n', 0o755)
+        for name in ("id", "getent"):       # pretend the pituner user and group exist
+            write(os.path.join(self.p["stubs"], name), "#!/bin/sh\nexit 0\n", 0o755)
+        open(self.p["calls"], "w").close()
+
+    def run_uninstall(self, args=(), stdin=""):
+        env = dict(APP_DIR=self.p["app"], BIN_DIR=self.p["bin"], UNIT_DIR=self.p["unit"],
+                   LOGROTATE_FILE=self.p["lr"], BLACKLIST_FILE=self.p["bl"], ICECAST_XML=self.p["ice"],
+                   SMB_CONF=self.p["smb"], NGINX_DIR=self.p["ngx"], WWW_DIR=self.p["www"],
+                   VARLOG_DIR=self.p["log"],
+                   PATH=self.p["stubs"] + os.pathsep + os.environ["PATH"])
+        return subprocess.run(["bash", "-c", self.SCRIPT, "uninstall.sh", *args], input=stdin,
+                              capture_output=True, text=True, env=dict(os.environ, **env))
+
+    def calls(self):
+        return read(self.p["calls"])
+
+    def exists(self, key, *rest):
+        return os.path.exists(os.path.join(self.p[key], *rest))
+
+    def assert_pituner_is_gone_and_the_rest_is_not(self):
+        self.assertFalse(self.exists("app"))
+        for path in (("unit", "pituner.service"), ("lr",), ("bl",), ("bin", "demux"), ("bin", "redsea"),
+                     ("bin", "pituner"), ("www", "pituner"), ("log", "pituner"), ("log", "pi-tuner"),
+                     ("log", "pituner.log"), ("ngx", "sites-enabled", "pituner"),
+                     ("ngx", "sites-available", "pituner"), ("ngx", "conf.d", "pi-tuner.conf")):
+            self.assertFalse(self.exists(path[0], *path[1:]), path)
+        for path in (("bin", "othertool"), ("unit", "other.service"), ("www", "html", "index.html"),
+                     ("log", "syslog"), ("ngx", "sites-enabled", "mysite")):
+            self.assertTrue(self.exists(path[0], *path[1:]), path)
+        smb = read(self.p["smb"])
+        self.assertNotIn("recordings", smb)
+        self.assertIn("workgroup = W", smb)
+        self.assertIn("[printers]", smb)
+        self.assertIn("userdel pituner", self.calls())
+
+    def test_interactive_wipe_asks_once_then_offers_to_keep_nginx_and_icecast(self):
+        r = self.run_uninstall(stdin="y\n\n\nn\n")        # remove all / keep nginx / keep icecast / no pw reset
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_pituner_is_gone_and_the_rest_is_not()
+        self.assertIn("audio recordings", r.stdout)           # the plan warns about the recordings
+        self.assertIn("Keep Nginx installed?", r.stderr)
+        self.assertIn("Keep Icecast installed?", r.stderr)
+        self.assertNotIn("apt-get", self.calls())
+        self.assertIn("secret", read(self.p["ice"]))         # kept Icecast, passwords left as-is
+
+    def test_declining_the_first_question_changes_nothing(self):
+        r = self.run_uninstall(stdin="n\n")
+        self.assertEqual(r.returncode, 0)
+        self.assertIn("Nothing was changed", r.stdout)
+        self.assertTrue(self.exists("app", "recordings", "WLSU", "2026", "10", "22", "a.mp3"))
+        self.assertTrue(self.exists("unit", "pituner.service"))
+        self.assertEqual(self.calls(), "")
+
+    def test_saying_no_to_keeping_removes_the_packages(self):
+        r = self.run_uninstall(stdin="y\nn\nn\n")
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        calls = self.calls()
+        self.assertIn("apt-get purge -y nginx nginx-common", calls)
+        self.assertIn("apt-get purge -y icecast2", calls)
+        self.assert_pituner_is_gone_and_the_rest_is_not()
+
+    def test_yes_wipes_pituner_but_keeps_nginx_and_icecast(self):
+        r = self.run_uninstall(["--yes"])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assert_pituner_is_gone_and_the_rest_is_not()
+        self.assertNotIn("apt-get", self.calls())
+        self.assertIn("Kept Nginx", r.stdout)
+        self.assertIn("Kept Icecast", r.stdout)
+
+    def test_yes_with_remove_flags_purges_both(self):
+        r = self.run_uninstall(["--yes", "--remove-icecast", "--remove-nginx"])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("apt-get purge -y nginx nginx-common", self.calls())
+        self.assertIn("apt-get purge -y icecast2", self.calls())
+
+    def test_remove_flags_need_yes_and_unknown_options_are_rejected(self):
+        for args in (["--remove-nginx"], ["--remove-icecast"], ["--bogus"]):
+            r = self.run_uninstall(args)
+            self.assertEqual(r.returncode, 1, args)
+        self.assertTrue(self.exists("app"))
+
+    def test_missing_nginx_and_icecast_are_skipped(self):
+        import shutil as sh
+        sh.rmtree(self.p["ngx"])
+        os.remove(self.p["ice"])
+        os.remove(os.path.join(self.p["stubs"], "nginx"))
+        os.remove(os.path.join(self.p["stubs"], "icecast2"))
+        r = self.run_uninstall(["--yes"])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertIn("Nginx is not installed", r.stdout)
+        self.assertIn("Icecast is not installed", r.stdout)
+
+
+class LogMigrationTests(Base):
+    """The log step runs for every mode, so an upgrade moves old logs to the new place."""
+    BLOCK = block("# Local rotating logs", 'ok "Log directory ${LOG_DIR} and logrotate config installed."')
+
+    def setUp(self):
+        super().setUp()
+        self.new = os.path.join(self.d, "var-log-pituner")
+        self.old = os.path.join(self.d, "var-www-pituner")
+        self.lr = os.path.join(self.d, "logrotate.d")
+
+    def migrate(self, keep=1):
+        script = (STUBS + f'KEEP_SETTINGS={keep}; SRC="{REPO}"; CALLS="{self.calls}"\n'
+                  f'LOG_DIR="{self.new}"; OLD_LOG_DIR="{self.old}"; LOGROTATE_DIR="{self.lr}"\n'
+                  + self.BLOCK)
+        return run_bash(script)
+
+    def test_upgrade_moves_old_logs_and_removes_the_old_directory(self):
+        write(os.path.join(self.old, "tuner.log"), "old tuner\n")
+        write(os.path.join(self.old, "eas.log"), "old eas\n")
+        write(os.path.join(self.old, "rbds.log.1.gz"), "gz")
+        write(os.path.join(self.old, "notes.txt"), "stray")
+        r = self.migrate(keep=1)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(os.path.exists(self.old))
+        for name, text in (("tuner.log", "old tuner\n"), ("eas.log", "old eas\n"),
+                           ("rbds.log.1.gz", "gz"), ("notes.txt", "stray")):
+            self.assertEqual(read(os.path.join(self.new, name)), text)
+        self.assertTrue(os.path.isfile(os.path.join(self.lr, "pituner")))
+        self.assertIn("/var/log/pituner/*.log", read(os.path.join(self.lr, "pituner")))
+
+    def test_nothing_is_overwritten_when_both_places_have_a_log(self):
+        write(os.path.join(self.new, "tuner.log"), "new\n")
+        write(os.path.join(self.old, "tuner.log"), "old\n")
+        r = self.migrate()
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertEqual(read(os.path.join(self.new, "tuner.log")), "new\n")
+        self.assertEqual(read(os.path.join(self.new, "tuner.log.from-www")), "old\n")
+        self.assertFalse(os.path.exists(self.old))
+
+    def test_fresh_install_without_an_old_directory_just_creates_the_new_one(self):
+        r = self.migrate(keep=0)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertTrue(os.path.isdir(self.new))
+        self.assertFalse(os.path.exists(self.old))
+
+
 class StaticTests(unittest.TestCase):
     def test_scripts_parse(self):
         for name in ("install.sh", "uninstall.sh", "pituner"):
@@ -278,7 +524,8 @@ class StaticTests(unittest.TestCase):
         self.assertIn('install -m 644 "${SRC}/configure.py"', INSTALL)
         self.assertIn('install -m 755 "${SRC}/pituner" /usr/local/bin/pituner', INSTALL)
         self.assertTrue(os.access(os.path.join(REPO, "pituner"), os.X_OK))
-        self.assertIn("/usr/local/bin/pituner", read(os.path.join(REPO, "uninstall.sh")))
+        self.assertIn("${BIN_DIR}/pituner", read(os.path.join(REPO, "uninstall.sh")))
+        self.assertIn('BIN_DIR="${BIN_DIR:-/usr/local/bin}"', read(os.path.join(REPO, "uninstall.sh")))
 
 
 class WrapperTests(unittest.TestCase):

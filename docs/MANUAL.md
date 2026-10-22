@@ -250,6 +250,11 @@ With no terminal it upgrades. Skip the question with `--upgrade`,
 
 - Your settings are copied to `/opt/pituner/backups/<date-time>/` first.
 - New settings are added with safe defaults; **your values are never changed**.
+- Logs now live in `/var/log/pituner/`. An upgrade moves everything from the old
+  `/var/www/pituner/` (rotated copies too, nothing overwritten) and removes that
+  directory, then installs the current logrotate rule and service unit.
+- An upgrade also offers the read-only recordings share (section 11). Existing
+  values such as `DOWN_DELAY` are kept; change them with `sudo pituner config`.
 - The Icecast admin password stays in `/etc/icecast2/icecast.xml`; Pi-Tuner
   doesn't store it.
 
@@ -345,6 +350,19 @@ One line per RadioText change, in local time, a new file each day:
 `RECORD_KEEP_DAYS=14` deletes files (and `RBDS.log`s) older than 14 days, plus
 empty date folders, checked hourly. Leave it out to keep everything. With email
 alerts on, you are warned when free space drops below `DISK_MIN_GB`.
+
+### Sharing the recordings on your network
+
+The installer can share `/opt/pituner/recordings` as a read-only SMB share with
+no login (it offers this on a fresh install and on an upgrade, and installs
+Samba if needed). Open `\\pituner\recordings` on Windows, or
+`smb://pituner/recordings` on macOS and Linux. The share runs as the `pituner`
+user, so nothing else under `/opt/pituner` is exposed, and it cannot be written
+to. You can limit it to your LAN, e.g. `192.168.1.0/24`, when the installer asks.
+Unattended: `PITUNER_SMB_SHARE=1 PITUNER_SMB_ALLOW=192.168.1.0/24 sudo ./install.sh`.
+
+Windows 10/11 may refuse guest logons by default; if so, enable "Enable insecure
+guest logons" in Group Policy, or use macOS/Linux, VLC or a phone app.
 
 ## 12. EAS alerts: tone detection and SAME decoding
 
@@ -665,13 +683,21 @@ attempts.
 
 ## 18. Uninstalling
 
-Removes the service, application files, the `pituner` user and command, and the
-`demux` and `redsea` decoders. System packages stay.
+Wipes everything Pi-Tuner put on the machine: the service, `/opt/pituner` **with
+its recordings**, the `pituner` user, the `demux`, `redsea` and `pituner`
+commands, the logs and anything named `pituner` or `pi-tuner` under `/var/log`
+and `/var/www`, the logrotate rule, the recordings SMB share, the DVB driver
+blacklist and any nginx config named after pituner.
 
 ```sh
-sudo ./uninstall.sh          # asks before removing each thing
-sudo ./uninstall.sh --yes    # remove everything without prompting
+sudo ./uninstall.sh          # shows what will go, asks once, then asks about Icecast and Nginx
+sudo ./uninstall.sh --yes    # no questions; wipes Pi-Tuner, keeps Icecast and Nginx
+sudo ./uninstall.sh --yes --remove-icecast --remove-nginx   # also purge those two
 ```
+
+It asks whether to **keep Icecast** and **keep Nginx** (default: keep). If you
+keep Icecast it offers to reset its passwords to the Debian default. `rtl-sdr`,
+`ffmpeg` and `samba` are left installed; remove them yourself if unwanted.
 
 ## 19. Appendix: SAME code tables
 
