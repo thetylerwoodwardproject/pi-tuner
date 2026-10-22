@@ -486,7 +486,11 @@ The Pi's host name is added to every subject. Turn each kind on or off with
 - The password is plain text in `smtp.conf`: keep it `chmod 600` and out of git.
   If it contains ` #`, wrap it in double quotes (the menu does this for you).
 - Brief self-healing blips send nothing: a station must stay down for
-  `DOWN_DELAY` seconds first.
+  `DOWN_DELAY` seconds first. The installer asks for this (default 120); change
+  it later under `pituner config` > email ("Seconds down before the 'down' email"),
+  or edit `DOWN_DELAY` in `smtp.conf` and restart. A dongle that stops delivering
+  audio is flagged after about 20 seconds, so its email arrives about that much
+  later than `DOWN_DELAY`.
 
 ## 14. Zabbix monitoring
 

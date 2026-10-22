@@ -750,6 +750,10 @@ if [ "${INTERACTIVE}" = "1" ] && confirm "Enable SMTP email alerts now?"; then
   fi
   smtp_from=$(ask "  From address" "pituner@$(hostname)")
   smtp_to=$(ask "  Send alerts to (comma-separated addresses)" "")
+  smtp_delay=$(ask "  Seconds a station must stay down before the 'down' email" "120")
+  case "${smtp_delay}" in
+    ''|*[!0-9]*) warn "'${smtp_delay}' is not a whole number, using 120."; smtp_delay="120" ;;
+  esac
   if [ -z "${smtp_host}" ] || [ -z "${smtp_to}" ]; then
     warn "SMTP server and recipient are both required; email alerts left disabled."
     install -m 600 "${SRC}/smtp.conf" "${APP_DIR}/smtp.conf"
@@ -772,7 +776,7 @@ ALERT_STATION=true
 ALERT_EAS=true
 ALERT_DISK=true
 ALERT_SERVICE=true
-DOWN_DELAY=120
+DOWN_DELAY=${smtp_delay}
 DISK_MIN_GB=2
 # ─── end user settings ─────────────────────────────
 EOF
