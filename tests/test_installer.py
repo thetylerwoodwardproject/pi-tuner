@@ -367,6 +367,28 @@ class WebShareTests(Base):
         self.share(interactive=0, existing=self.conf_text())
         self.assertIn("location /logs/ {", self.conf_text())
 
+    def test_logs_are_linked_into_the_front_page_listing(self):
+        logs = os.path.join(self.d, "logs")
+        os.makedirs(logs)
+        link = os.path.join(self.app, "recordings", "logs")
+        self.share(interactive=0, env=f'PITUNER_WEB_RECORDINGS=1; LOG_DIR="{logs}"\n')   # logs off: no link
+        self.assertFalse(os.path.lexists(link))
+        self.share(interactive=0, env=f'PITUNER_WEB_RECORDINGS=1; PITUNER_WEB_LOGS=1; LOG_DIR="{logs}"\n')
+        self.assertTrue(os.path.islink(link))
+        self.assertEqual(os.readlink(link), logs)
+        other = os.path.join(self.d, "elsewhere")
+        os.makedirs(other)
+        self.share(interactive=0, env=f'PITUNER_WEB_RECORDINGS=1; PITUNER_WEB_LOGS=1; LOG_DIR="{other}"\n')
+        self.assertEqual(os.readlink(link), other)                                      # re-run retargets it
+
+    def test_a_real_folder_called_logs_is_never_replaced(self):
+        folder = os.path.join(self.app, "recordings", "logs")
+        write(os.path.join(folder, "a.mp3"), "audio")
+        r = self.share(interactive=0, env='PITUNER_WEB_RECORDINGS=1; PITUNER_WEB_LOGS=1\n')
+        self.assertFalse(os.path.islink(folder))
+        self.assertTrue(os.path.isfile(os.path.join(folder, "a.mp3")))
+        self.assertIn("is not a link", r.stdout)
+
     def test_upgrade_offers_the_logs_listing_to_an_existing_recordings_listing(self):
         self.share(interactive=0, env='PITUNER_WEB_RECORDINGS=1; PITUNER_WEB_PORT=80\n')
         before = self.conf_text()
@@ -554,6 +576,15 @@ class UninstallTests(unittest.TestCase):
         self.assertNotIn("apt-get", self.calls())
         self.assertIn("Kept Nginx", r.stdout)
         self.assertIn("Kept Icecast", r.stdout)
+
+    def test_the_logs_link_is_removed_without_following_it(self):
+        keep = os.path.join(self.d, "elsewhere")
+        write(os.path.join(keep, "important.log"), "must survive")
+        os.symlink(keep, os.path.join(self.p["app"], "recordings", "logs"))
+        r = self.run_uninstall(["--yes"])
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
+        self.assertFalse(self.exists("app"))
+        self.assertEqual(read(os.path.join(keep, "important.log")), "must survive")
 
     def test_yes_with_remove_flags_purges_both(self):
         r = self.run_uninstall(["--yes", "--remove-icecast", "--remove-nginx"])

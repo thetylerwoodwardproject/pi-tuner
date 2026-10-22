@@ -898,6 +898,17 @@ if [ "${web_wanted}" = "1" ]; then
     chown -R pituner:pituner "${LOG_DIR:-/var/log/pituner}"
   fi
   mkdir -p "$(dirname "${WEB_CONF}")" "${APP_DIR}/recordings"
+  # Show the logs next to the stations on the front page (the /logs/ rules still
+  # apply to it). Never replace a real folder, e.g. a station that is called "logs".
+  web_link="${APP_DIR}/recordings/logs"
+  if [ "${web_logs}" = "1" ]; then
+    if [ -L "${web_link}" ] || [ ! -e "${web_link}" ]; then
+      ln -sfn "${LOG_DIR:-/var/log/pituner}" "${web_link}"
+      chown -h pituner:pituner "${web_link}" 2>/dev/null || true
+    else
+      warn "${web_link} already exists and is not a link; the logs are still at /logs/."
+    fi
+  fi
   # The web server runs as www-data: let it walk to the recordings, nothing more.
   chmod o+x "${APP_DIR}" 2>/dev/null || true
   chmod o+rx "${APP_DIR}/recordings" 2>/dev/null || true
