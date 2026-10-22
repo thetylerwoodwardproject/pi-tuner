@@ -581,7 +581,8 @@ For example:
   only `recordings/`. You can limit it to your LAN.
   The installer can also publish the logs at `/logs/` (plain text, read-only,
   same network limit); Pi-Tuner masks the Icecast password in every log line, and
-  scrubs existing logs before publishing them. Details are in the manual (section 11).
+  scrubs existing logs before publishing them. They appear as a `logs/` folder on
+  the front page next to the stations. Details are in the manual (section 11).
 
 ## Troubleshooting
 

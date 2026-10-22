@@ -371,6 +371,9 @@ month and day; MP3s play in the browser and can be downloaded or seeked.
   open as plain text in the browser; rotated `.gz` files download. The logs listing
   is off unless you say yes (the installer asks on a fresh setup and again on an
   upgrade if it is still off), and it follows the same network limit.
+  A `logs/` link (a symlink, `/opt/pituner/recordings/logs`) is added so the logs
+  show up on the front page next to the stations. A real folder with that name,
+  such as a station called "logs", is never replaced; uninstalling removes only the link.
   Pi-Tuner masks the Icecast password in everything it logs (`icecast://source:***@...`),
   and turning the logs listing on also masks it in the existing logs, including
   rotated ones, before they are published. The Icecast password you pasted
