@@ -3,11 +3,11 @@
 #
 # Wipes everything Pi-Tuner put on the system: the service, /opt/pituner (with
 # the recordings), the pituner user, the demux/redsea/pituner commands, the logs
-# (/var/log and /var/www), the logrotate rule, the SMB recordings share, the
+# (/var/log and /var/www), the logrotate rule, the recordings web listing, the
 # DVB driver blacklist and any nginx config named after pituner.
 #
 # It then asks whether to keep Icecast and Nginx. Other packages that
-# install.sh pulled in (rtl-sdr, ffmpeg, samba) are left alone.
+# install.sh pulled in (rtl-sdr, ffmpeg) are left alone.
 #
 # Usage:
 #   sudo ./uninstall.sh                  # shows the plan, asks once, then asks about Icecast / Nginx
@@ -24,8 +24,8 @@ UNIT_DIR="${UNIT_DIR:-/etc/systemd/system}"
 LOGROTATE_FILE="${LOGROTATE_FILE:-/etc/logrotate.d/pituner}"
 BLACKLIST_FILE="${BLACKLIST_FILE:-/etc/modprobe.d/rtl-sdr-blacklist.conf}"
 ICECAST_XML="${ICECAST_XML:-/etc/icecast2/icecast.xml}"
-SMB_CONF="${SMB_CONF:-/etc/samba/smb.conf}"
 NGINX_DIR="${NGINX_DIR:-/etc/nginx}"
+NGINX_BIN="${NGINX_BIN:-nginx}"
 WWW_DIR="${WWW_DIR:-/var/www}"
 VARLOG_DIR="${VARLOG_DIR:-/var/log}"
 
@@ -101,7 +101,7 @@ if [ -n "$(find "${APP_DIR}/recordings" -type f 2>/dev/null | head -n1)" ]; then
   echo -e "    ${BOLD}including the audio recordings (${REC_NOTE})${RESET}"
 fi
 echo "  - Pi-Tuner logs and anything named pituner under ${VARLOG_DIR} and ${WWW_DIR}"
-echo "  - the logrotate rule, the recordings SMB share, the DVB driver blacklist"
+echo "  - the logrotate rule, the recordings web listing, the DVB driver blacklist"
 echo "  - the demux, redsea and pituner commands"
 echo "  - any nginx config named after pituner"
 echo ""
@@ -162,20 +162,12 @@ else
   info "${BLACKLIST_FILE} not present."
 fi
 
-# ------------------------------------------------------------- recordings share
-if grep -qF "# BEGIN pituner recordings share" "${SMB_CONF}" 2>/dev/null; then
-  step "Remove the recordings SMB share"
-  sed -i "/^# BEGIN pituner recordings share/,/^# END pituner recordings share/d" "${SMB_CONF}"
-  systemctl restart smbd 2>/dev/null || true
-  ok "Removed the [recordings] share from ${SMB_CONF} (Samba itself is left installed)."
-fi
-
 # ------------------------------------------------------------- logs
 step "Remove log rotation and logs"
 rm -f "${LOGROTATE_FILE}"
 ok "Removed ${LOGROTATE_FILE}."
 removed_any=0
-for base in "${VARLOG_DIR}" "${WWW_DIR}"; do
+for base in "${VARLOG_DIR}" "${VARLOG_DIR}/nginx" "${WWW_DIR}"; do
   while IFS= read -r path; do
     [ -n "${path}" ] || continue
     rm -rf "${path}"
@@ -187,7 +179,7 @@ done
 
 # ------------------------------------------------------------- nginx
 step "Nginx"
-if command -v nginx >/dev/null 2>&1 || [ -d "${NGINX_DIR}" ]; then
+if command -v "${NGINX_BIN}" >/dev/null 2>&1 || [ -d "${NGINX_DIR}" ]; then
   nginx_changed=0
   for sub in sites-enabled sites-available conf.d snippets; do
     [ -d "${NGINX_DIR}/${sub}" ] || continue
@@ -199,7 +191,7 @@ if command -v nginx >/dev/null 2>&1 || [ -d "${NGINX_DIR}" ]; then
     done < <(pituner_named "${NGINX_DIR}/${sub}")
   done
   if [ "${nginx_changed}" = "1" ]; then
-    if nginx -t >/dev/null 2>&1; then
+    if "${NGINX_BIN}" -t >/dev/null 2>&1; then
       systemctl reload nginx 2>/dev/null || true
     else
       warn "nginx -t failed after removing the pituner config; check your nginx configuration."
@@ -255,5 +247,5 @@ echo ""
 ok "Uninstall complete."
 echo ""
 echo "  Left in place (remove manually if you no longer need them):"
-echo "    sudo apt-get remove --purge rtl-sdr ffmpeg samba"
+echo "    sudo apt-get remove --purge rtl-sdr ffmpeg"
 echo ""

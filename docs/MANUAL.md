@@ -253,7 +253,7 @@ With no terminal it upgrades. Skip the question with `--upgrade`,
 - Logs now live in `/var/log/pituner/`. An upgrade moves everything from the old
   `/var/www/pituner/` (rotated copies too, nothing overwritten) and removes that
   directory, then installs the current logrotate rule and service unit.
-- An upgrade also offers the read-only recordings share (section 11). Existing
+- An upgrade also offers the read-only recordings web listing (section 11). Existing
   values such as `DOWN_DELAY` are kept; change them with `sudo pituner config`.
 - The Icecast admin password stays in `/etc/icecast2/icecast.xml`; Pi-Tuner
   doesn't store it.
@@ -351,18 +351,24 @@ One line per RadioText change, in local time, a new file each day:
 empty date folders, checked hourly. Leave it out to keep everything. With email
 alerts on, you are warned when free space drops below `DISK_MIN_GB`.
 
-### Sharing the recordings on your network
+### Browsing the recordings from a web browser
 
-The installer can share `/opt/pituner/recordings` as a read-only SMB share with
-no login (it offers this on a fresh install and on an upgrade, and installs
-Samba if needed). Open `\\pituner\recordings` on Windows, or
-`smb://pituner/recordings` on macOS and Linux. The share runs as the `pituner`
-user, so nothing else under `/opt/pituner` is exposed, and it cannot be written
-to. You can limit it to your LAN, e.g. `192.168.1.0/24`, when the installer asks.
-Unattended: `PITUNER_SMB_SHARE=1 PITUNER_SMB_ALLOW=192.168.1.0/24 sudo ./install.sh`.
+The installer can serve `/opt/pituner/recordings` as a read-only web listing
+with no login (it offers this on a fresh install and on an upgrade, and installs
+Nginx if needed). Open `http://pituner:8080/` and click through station, year,
+month and day; MP3s play in the browser and can be downloaded or seeked.
 
-Windows 10/11 may refuse guest logons by default; if so, enable "Enable insecure
-guest logons" in Group Policy, or use macOS/Linux, VLC or a phone app.
+- It runs in its own Nginx server block (`/etc/nginx/conf.d/pituner-recordings.conf`)
+  on its own port (default 8080), so existing Nginx sites are untouched.
+- Only the recordings folder is served. Configuration, logs and everything else
+  stay private; dotfiles are blocked, and anything other than GET and HEAD is refused.
+- You can limit it to your LAN, e.g. `192.168.1.0/24`, when the installer asks.
+  Without a limit, anyone who can reach the Pi can browse the recordings.
+- If ufw is active the port is opened. Nginx's own request log for the listing is
+  `/var/log/nginx/pituner-recordings.access.log`.
+- Unattended: `PITUNER_WEB_RECORDINGS=1 PITUNER_WEB_PORT=8080 PITUNER_WEB_ALLOW=192.168.1.0/24 sudo ./install.sh`.
+- To change the port or network later, run the installer again (it refreshes the
+  listing and keeps your values) or edit the conf file and `sudo systemctl reload nginx`.
 
 ## 12. EAS alerts: tone detection and SAME decoding
 
@@ -686,7 +692,7 @@ attempts.
 Wipes everything Pi-Tuner put on the machine: the service, `/opt/pituner` **with
 its recordings**, the `pituner` user, the `demux`, `redsea` and `pituner`
 commands, the logs and anything named `pituner` or `pi-tuner` under `/var/log`
-and `/var/www`, the logrotate rule, the recordings SMB share, the DVB driver
+and `/var/www`, the logrotate rule, the recordings web listing, the DVB driver
 blacklist and any nginx config named after pituner.
 
 ```sh
@@ -696,8 +702,8 @@ sudo ./uninstall.sh --yes --remove-icecast --remove-nginx   # also purge those t
 ```
 
 It asks whether to **keep Icecast** and **keep Nginx** (default: keep). If you
-keep Icecast it offers to reset its passwords to the Debian default. `rtl-sdr`,
-`ffmpeg` and `samba` are left installed; remove them yourself if unwanted.
+keep Icecast it offers to reset its passwords to the Debian default. `rtl-sdr`
+and `ffmpeg` are left installed; remove them yourself if unwanted.
 
 ## 19. Appendix: SAME code tables
 

@@ -257,77 +257,103 @@ class AlertsKeepTests(Base):
         self.assertIn("Added to zabbix.conf", r.stdout)
 
 
-class SmbShareTests(Base):
-    BLOCK = block("# ------------------------------------------------------------- recordings share",
+class WebShareTests(Base):
+    BLOCK = block("# ------------------------------------------------------------- recordings web listing",
                   '# ------------------------------------------------------------- service')
-    DEFAULT_CONF = "[global]\n   workgroup = WORKGROUP\n\n[printers]\n   path = /var/tmp\n"
 
-    def share(self, conf=DEFAULT_CONF, interactive=1, confirm="y", ask="", testparm_ok=True,
-              have_smbd=True, existing=None):
-        self.conf = os.path.join(self.d, "smb.conf")
-        if conf is not None:
-            write(self.conf, existing if existing is not None else conf)
-        stubs = STUBS + ("testparm() { return %d; }\n" % (0 if testparm_ok else 1)
-                         + 'apt-get() { echo "apt-get $*" >> "$CALLS"; }\n'
-                         + 'hostname() { echo pituner; }\n'
-                         + ("smbd() { :; }\n" if have_smbd else
-                            'command() { if [ "$1" = -v ] && [ "$2" = smbd ]; then return 1; fi; '
-                            'builtin command "$@"; }\n'))
+    def share(self, interactive=1, confirm="y", ask_answers=("8080", ""), nginx_ok=True,
+              have_nginx=True, existing=None, env=""):
+        self.conf = os.path.join(self.d, "conf.d", "pituner-recordings.conf")
+        if existing is not None:
+            write(self.conf, existing)
+        port_ans, net_ans = ask_answers
+        stubs = STUBS.replace("ask()  { printf '%s' \"${ASK_ANSWER:-$2}\"; }",
+                              "ask()  { case \"$1\" in *Port*) printf '%s' \"${PORT_ANS:-$2}\";; "
+                              "*network*) printf '%s' \"${NET_ANS:-$2}\";; *) printf '%s' \"$2\";; esac; }")
+        stubs += ("nginx() { echo \"nginx $*\" >> \"$CALLS\"; return %d; }\n" % (0 if nginx_ok else 1)
+                  + 'apt-get() { echo "apt-get $*" >> "$CALLS"; }\n'
+                  + 'hostname() { echo pituner; }\n' + "sysctl() { return 1; }\n"
+                  + ("" if have_nginx else
+                     'command() { if [ "$1" = -v ] && [ "$2" = nginx ]; then return 1; fi; builtin command "$@"; }\n'))
         script = (stubs + f'APP_DIR="{self.app}"; INTERACTIVE={interactive}; CALLS="{self.calls}"\n'
-                  f'ASK_ANSWER="{ask}"; CONFIRM_ANSWER="{confirm}"; SMB_CONF="{self.conf}"\n'
-                  + self.BLOCK)
+                  f'CONFIRM_ANSWER="{confirm}"; WEB_CONF="{self.conf}"; PORT_ANS="{port_ans}"; NET_ANS="{net_ans}"\n'
+                  + env + self.BLOCK)
+        os.makedirs(self.app, exist_ok=True)
         return run_bash(script)
 
     def conf_text(self):
         return read(self.conf) if os.path.exists(self.conf) else ""
 
-    def test_opt_in_writes_a_read_only_guest_share_of_recordings_only(self):
+    def test_opt_in_serves_only_the_recordings_folder_read_only(self):
         r = self.share()
-        self.assertEqual(r.returncode, 0, r.stderr)
+        self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         text = self.conf_text()
-        self.assertIn("[recordings]", text)
-        self.assertIn(f"path = {self.app}/recordings", text)
-        for line in ("read only = yes", "guest ok = yes", "force user = pituner"):
-            self.assertIn(line, text)
-        self.assertNotIn("hosts allow", text)
-        self.assertNotIn("writable = yes", text)
-        self.assertIn("map to guest = Bad User", text)       # no-login clients become guests
-        self.assertIn("workgroup = WORKGROUP", text)         # existing config untouched
-        self.assertIn("SYSTEMCTL restart smbd", self.calls_text())
-        self.assertNotIn("apt-get", self.calls_text())       # smbd already installed
+        self.assertIn("listen 8080;", text)
+        self.assertIn(f"root {self.app}/recordings;", text)
+        self.assertIn("autoindex on;", text)
+        self.assertIn("limit_except GET HEAD { deny all; }", text)
+        self.assertIn(r"location ~ /\. { deny all; }", text)
+        self.assertNotIn("allow ", text.replace("deny all", ""))          # no network limit asked for
+        self.assertIn("nginx -t", self.calls_text())
+        self.assertIn("SYSTEMCTL reload nginx", self.calls_text())
+        self.assertIn("http://pituner:8080/", r.stdout)
+        self.assertNotIn("apt-get", self.calls_text())                    # nginx already installed
 
-    def test_installs_samba_when_missing(self):
-        self.share(have_smbd=False)
-        self.assertIn("apt-get install -y samba", self.calls_text())
+    def test_ipv6_listener_only_where_the_kernel_has_ipv6(self):
+        has_v6 = os.path.join(self.d, "if_inet6")
+        write(has_v6, "fe80...\n")
+        self.share(env=f'PROC_NET_INET6="{has_v6}"\n')
+        self.assertIn("listen [::]:8080;", self.conf_text())
+        os.remove(self.conf)
+        self.share(env=f'PROC_NET_INET6="{self.d}/missing"\n')
+        self.assertNotIn("[::]", self.conf_text())          # nginx would refuse the config
+
+    def test_installs_nginx_when_missing(self):
+        self.share(have_nginx=False)
+        self.assertIn("apt-get install -y nginx", self.calls_text())
 
     def test_declining_or_non_interactive_changes_nothing(self):
         self.share(confirm="n")
-        self.assertEqual(self.conf_text(), self.DEFAULT_CONF)
+        self.assertEqual(self.conf_text(), "")
         self.share(interactive=0)
-        self.assertEqual(self.conf_text(), self.DEFAULT_CONF)
+        self.assertEqual(self.conf_text(), "")
+        self.assertNotIn("nginx -t", self.calls_text())
 
-    def test_does_not_duplicate_map_to_guest_if_already_set(self):
-        self.share(conf="[global]\n   map to guest = never\n")
-        self.assertEqual(self.conf_text().lower().count("map to guest"), 1)
+    def test_unattended_opt_in_via_environment(self):
+        self.share(interactive=0, env='PITUNER_WEB_RECORDINGS=1; PITUNER_WEB_PORT=8090; '
+                                      'PITUNER_WEB_ALLOW=10.0.0.0/8\n')
+        text = self.conf_text()
+        self.assertIn("listen 8090;", text)
+        self.assertIn("allow 10.0.0.0/8;", text)
 
     def test_network_limit_is_written_and_kept_on_refresh(self):
-        self.share(ask="192.168.1.0/24")
-        self.assertIn("hosts allow = 192.168.1.0/24", self.conf_text())
-        r = self.share(interactive=0, existing=self.conf_text())     # re-run: refresh, no prompts
+        self.share(ask_answers=("8081", "192.168.1.0/24, 10.0.0.0/8"))
         text = self.conf_text()
-        self.assertEqual(text.count("[recordings]"), 1)
-        self.assertIn("hosts allow = 192.168.1.0/24", text)
+        self.assertIn("listen 8081;", text)
+        for line in ("allow 127.0.0.1;", "allow 192.168.1.0/24;", "allow 10.0.0.0/8;", "deny all;"):
+            self.assertIn(line, text)
+        r = self.share(interactive=0, existing=text)                       # re-run: refresh, no prompts
+        again = self.conf_text()
+        self.assertEqual(again.count("server {"), 1)
+        for line in ("listen 8081;", "allow 192.168.1.0/24;", "allow 10.0.0.0/8;"):
+            self.assertIn(line, again)
         self.assertIn("already set up", r.stdout)
 
-    def test_bad_network_value_is_ignored_with_a_warning(self):
-        r = self.share(ask="evil; rm -rf /")
+    def test_bad_port_and_bad_network_are_ignored_with_warnings(self):
+        r = self.share(ask_answers=("99999", "evil; rm -rf /"))
+        self.assertIn("not a valid port", r.stdout)
         self.assertIn("not a valid network list", r.stdout)
-        self.assertNotIn("hosts allow", self.conf_text())
+        text = self.conf_text()
+        self.assertIn("listen 8080;", text)
+        self.assertNotIn("evil", text)
 
-    def test_invalid_samba_config_is_not_installed(self):
-        r = self.share(testparm_ok=False)
-        self.assertEqual(self.conf_text(), self.DEFAULT_CONF)
-        self.assertIn("did not validate", r.stdout)
+    def test_config_nginx_rejects_is_rolled_back(self):
+        r = self.share(nginx_ok=False)
+        self.assertEqual(self.conf_text(), "")
+        self.assertIn("did not accept", r.stdout)
+        old = "# previous\nserver { listen 8082; }\n"
+        self.share(nginx_ok=False, interactive=0, existing=old)
+        self.assertEqual(self.conf_text(), old)                            # refresh failure restores the old file
 
 
 class UninstallTests(unittest.TestCase):
@@ -340,7 +366,7 @@ class UninstallTests(unittest.TestCase):
         j = lambda *a: os.path.join(self.d, *a)
         self.p = {k: j(v) for k, v in dict(
             app="opt/pituner", bin="bin", unit="unit", lr="lr/pituner", bl="modprobe/rtl-sdr-blacklist.conf",
-            ice="icecast2/icecast.xml", smb="samba/smb.conf", ngx="nginx", www="www", log="log",
+            ice="icecast2/icecast.xml", ngx="nginx", www="www", log="log",
             stubs="stubs", calls="calls.txt").items()}
         for f, c in [
             ("app/tuner.py", "x"), ("app/recordings/WLSU/2026/10/22/a.mp3", "audio"),
@@ -348,9 +374,9 @@ class UninstallTests(unittest.TestCase):
             ("unit/pituner.service", "x"), ("unit/other.service", "keep"),
             ("lr", None), ("bl", "blacklist"),
             ("ice", "<icecast><source-password>secret</source-password><admin-password>a</admin-password></icecast>"),
-            ("smb", "[global]\n   workgroup = W\n# BEGIN pituner recordings share\n[recordings]\n"
-                    "   path = /opt/pituner/recordings\n# END pituner recordings share\n[printers]\n"),
             ("ngx/sites-enabled/pituner", "x"), ("ngx/sites-available/pituner", "x"),
+            ("ngx/conf.d/pituner-recordings.conf", "x"), ("ngx/conf.d/other.conf", "keep"),
+            ("log/nginx/pituner-recordings.access.log", "x"), ("log/nginx/access.log", "keep"),
             ("ngx/sites-enabled/mysite", "keep"), ("ngx/conf.d/pi-tuner.conf", "x"),
             ("www/pituner/tuner.log", "x"), ("www/html/index.html", "keep"),
             ("log/pituner/tuner.log", "x"), ("log/pi-tuner/old.log", "x"), ("log/pituner.log", "x"),
@@ -368,10 +394,10 @@ class UninstallTests(unittest.TestCase):
             write(os.path.join(self.p["stubs"], name), "#!/bin/sh\nexit 0\n", 0o755)
         open(self.p["calls"], "w").close()
 
-    def run_uninstall(self, args=(), stdin=""):
-        env = dict(APP_DIR=self.p["app"], BIN_DIR=self.p["bin"], UNIT_DIR=self.p["unit"],
+    def run_uninstall(self, args=(), stdin="", **extra_env):
+        env = dict(extra_env, APP_DIR=self.p["app"], BIN_DIR=self.p["bin"], UNIT_DIR=self.p["unit"],
                    LOGROTATE_FILE=self.p["lr"], BLACKLIST_FILE=self.p["bl"], ICECAST_XML=self.p["ice"],
-                   SMB_CONF=self.p["smb"], NGINX_DIR=self.p["ngx"], WWW_DIR=self.p["www"],
+                   NGINX_DIR=self.p["ngx"], WWW_DIR=self.p["www"],
                    VARLOG_DIR=self.p["log"],
                    PATH=self.p["stubs"] + os.pathsep + os.environ["PATH"])
         return subprocess.run(["bash", "-c", self.SCRIPT, "uninstall.sh", *args], input=stdin,
@@ -388,15 +414,14 @@ class UninstallTests(unittest.TestCase):
         for path in (("unit", "pituner.service"), ("lr",), ("bl",), ("bin", "demux"), ("bin", "redsea"),
                      ("bin", "pituner"), ("www", "pituner"), ("log", "pituner"), ("log", "pi-tuner"),
                      ("log", "pituner.log"), ("ngx", "sites-enabled", "pituner"),
-                     ("ngx", "sites-available", "pituner"), ("ngx", "conf.d", "pi-tuner.conf")):
+                     ("ngx", "sites-available", "pituner"), ("ngx", "conf.d", "pi-tuner.conf"),
+                     ("ngx", "conf.d", "pituner-recordings.conf"),
+                     ("log", "nginx", "pituner-recordings.access.log")):
             self.assertFalse(self.exists(path[0], *path[1:]), path)
         for path in (("bin", "othertool"), ("unit", "other.service"), ("www", "html", "index.html"),
-                     ("log", "syslog"), ("ngx", "sites-enabled", "mysite")):
+                     ("log", "syslog"), ("ngx", "sites-enabled", "mysite"), ("ngx", "conf.d", "other.conf"),
+                     ("log", "nginx", "access.log")):
             self.assertTrue(self.exists(path[0], *path[1:]), path)
-        smb = read(self.p["smb"])
-        self.assertNotIn("recordings", smb)
-        self.assertIn("workgroup = W", smb)
-        self.assertIn("[printers]", smb)
         self.assertIn("userdel pituner", self.calls())
 
     def test_interactive_wipe_asks_once_then_offers_to_keep_nginx_and_icecast(self):
@@ -451,7 +476,7 @@ class UninstallTests(unittest.TestCase):
         os.remove(self.p["ice"])
         os.remove(os.path.join(self.p["stubs"], "nginx"))
         os.remove(os.path.join(self.p["stubs"], "icecast2"))
-        r = self.run_uninstall(["--yes"])
+        r = self.run_uninstall(["--yes"], NGINX_BIN="no-such-nginx")
         self.assertEqual(r.returncode, 0, r.stdout + r.stderr)
         self.assertIn("Nginx is not installed", r.stdout)
         self.assertIn("Icecast is not installed", r.stdout)

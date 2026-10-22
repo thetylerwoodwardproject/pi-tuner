@@ -819,66 +819,88 @@ else
 fi
 fi
 
-# ------------------------------------------------------------- recordings share
-# Optional read-only, no-login SMB share of the recordings folder. The share runs
-# as the pituner user, so nothing under ${APP_DIR} but recordings/ is exposed and
-# no permissions need loosening.
-SMB_CONF="${SMB_CONF:-/etc/samba/smb.conf}"
-SMB_BEGIN="# BEGIN pituner recordings share"
-SMB_END="# END pituner recordings share"
-smb_wanted=0
-smb_allow=""
-if grep -qF "${SMB_BEGIN}" "${SMB_CONF}" 2>/dev/null; then
-  smb_wanted=1
-  smb_allow="$(sed -n "/^${SMB_BEGIN}/,/^${SMB_END}/s/^[[:space:]]*hosts allow = //p" "${SMB_CONF}" | head -n1)"
-  info "The recordings share is already set up; refreshing it."
-elif [ "${INTERACTIVE}" = "1" ] && confirm "Share the recordings folder on your network (SMB, read-only, no login)?"; then
-  smb_wanted=1
-  smb_allow=$(ask "  Limit access to this network, e.g. 192.168.1.0/24 (blank = anyone who can reach the Pi)" "")
-elif [ "${PITUNER_SMB_SHARE:-}" = "1" ]; then      # unattended opt-in
-  smb_wanted=1
-  smb_allow="${PITUNER_SMB_ALLOW:-}"
+# ------------------------------------------------------------- recordings web listing
+# Optional read-only, no-login web view of the recordings folder (Nginx directory
+# listing). Only ${APP_DIR}/recordings is served; the configuration, logs and
+# everything else stay private. Runs in its own server block on its own port, so
+# it never touches an existing Nginx site.
+WEB_CONF="${WEB_CONF:-/etc/nginx/conf.d/pituner-recordings.conf}"
+web_wanted=0
+web_port="8080"
+web_allow=""
+if [ -f "${WEB_CONF}" ]; then
+  web_wanted=1
+  web_port="$(sed -n 's/^[[:space:]]*listen \([0-9]*\);.*/\1/p' "${WEB_CONF}" | head -n1)"
+  web_allow="$(sed -n 's/^[[:space:]]*allow \(.*\);/\1/p' "${WEB_CONF}" | grep -v '^127\.0\.0\.1$' | paste -sd' ' -)"
+  info "The recordings web listing is already set up; refreshing it."
+elif [ "${INTERACTIVE}" = "1" ] && confirm "Serve the recordings in a web browser (read-only, no login)?"; then
+  web_wanted=1
+  web_port=$(ask "  Port" "8080")
+  web_allow=$(ask "  Limit access to this network, e.g. 192.168.1.0/24 (blank = anyone who can reach the Pi)" "")
+elif [ "${PITUNER_WEB_RECORDINGS:-}" = "1" ]; then     # unattended opt-in
+  web_wanted=1
+  web_port="${PITUNER_WEB_PORT:-8080}"
+  web_allow="${PITUNER_WEB_ALLOW:-}"
 fi
-case "${smb_allow}" in
-  *[!0-9a-fA-F:./,\ ]*) warn "'${smb_allow}' is not a valid network list; the share will not be limited."; smb_allow="" ;;
+case "${web_port}" in
+  ''|*[!0-9]*) warn "'${web_port}' is not a valid port, using 8080."; web_port="8080" ;;
+  *) if [ "${web_port}" -lt 1 ] || [ "${web_port}" -gt 65535 ]; then
+       warn "'${web_port}' is not a valid port, using 8080."; web_port="8080"
+     fi ;;
 esac
-if [ "${smb_wanted}" = "1" ] && ! command -v smbd >/dev/null 2>&1; then
-  info "Installing Samba..."
-  DEBIAN_FRONTEND=noninteractive apt-get install -y samba \
-    || { warn "Could not install Samba; the recordings share was not set up."; smb_wanted=0; }
+case "${web_allow}" in
+  *[!0-9a-fA-F:./,\ ]*) warn "'${web_allow}' is not a valid network list; access will not be limited."; web_allow="" ;;
+esac
+if [ "${web_wanted}" = "1" ] && ! command -v nginx >/dev/null 2>&1; then
+  info "Installing Nginx..."
+  DEBIAN_FRONTEND=noninteractive apt-get install -y nginx \
+    || { warn "Could not install Nginx; the recordings web listing was not set up."; web_wanted=0; }
 fi
-if [ "${smb_wanted}" = "1" ]; then
-  mkdir -p "$(dirname "${SMB_CONF}")"
-  [ -f "${SMB_CONF}" ] || printf '[global]\n' > "${SMB_CONF}"
-  smb_tmp="$(mktemp)"
-  sed "/^${SMB_BEGIN}/,/^${SMB_END}/d" "${SMB_CONF}" > "${smb_tmp}"
-  # Samba only treats a no-login connection as a guest when this is set.
-  grep -qi '^[[:space:]]*map to guest' "${smb_tmp}" \
-    || sed -i '0,/^\[global\]/s//[global]\n   map to guest = Bad User/' "${smb_tmp}"
+if [ "${web_wanted}" = "1" ]; then
+  mkdir -p "$(dirname "${WEB_CONF}")" "${APP_DIR}/recordings"
+  # The web server runs as www-data: let it walk to the recordings, nothing more.
+  chmod o+x "${APP_DIR}" 2>/dev/null || true
+  chmod o+rx "${APP_DIR}/recordings" 2>/dev/null || true
+  web_prev=""
+  if [ -f "${WEB_CONF}" ]; then web_prev="$(mktemp)"; cp "${WEB_CONF}" "${web_prev}"; fi
   {
-    echo "${SMB_BEGIN}"
-    echo "[recordings]"
-    echo "   comment = Pi-Tuner recordings (read only)"
-    echo "   path = ${APP_DIR}/recordings"
-    echo "   read only = yes"
-    echo "   guest ok = yes"
-    echo "   browseable = yes"
-    echo "   force user = pituner"
-    echo "   force group = pituner"
-    [ -n "${smb_allow}" ] && echo "   hosts allow = ${smb_allow}"
-    echo "${SMB_END}"
-  } >> "${smb_tmp}"
-  if testparm -s "${smb_tmp}" >/dev/null 2>&1; then
-    cat "${smb_tmp}" > "${SMB_CONF}"
-    systemctl enable smbd >/dev/null 2>&1 || true
-    systemctl restart smbd 2>&1 || warn "Could not restart smbd; run: sudo systemctl restart smbd"
-    command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active" && ufw allow samba >/dev/null 2>&1
-    ok "Recordings shared read-only, no login: \\\\$(hostname)\\recordings  (smb://$(hostname)/recordings)"
-    [ -n "${smb_allow}" ] && info "Access is limited to ${smb_allow}."
+    echo "# Pi-Tuner: read-only web listing of the recordings (written by install.sh)."
+    echo "server {"
+    echo "    listen ${web_port};"
+    # Only where the kernel has IPv6; otherwise nginx refuses the whole config.
+    if [ -s "${PROC_NET_INET6:-/proc/net/if_inet6}" ] && ! sysctl -n net.ipv6.conf.all.disable_ipv6 2>/dev/null | grep -qx 1; then
+      echo "    listen [::]:${web_port};"
+    fi
+    echo "    server_name _;"
+    echo "    root ${APP_DIR}/recordings;"
+    echo "    autoindex on;"
+    echo "    autoindex_exact_size off;"
+    echo "    autoindex_localtime on;"
+    echo "    access_log /var/log/nginx/pituner-recordings.access.log;"
+    echo "    location / {"
+    echo "        limit_except GET HEAD { deny all; }"
+    if [ -n "${web_allow}" ]; then
+      echo "        allow 127.0.0.1;"
+      for net in ${web_allow//,/ }; do echo "        allow ${net};"; done
+      echo "        deny all;"
+    fi
+    echo "    }"
+    echo "    location ~ /\\. { deny all; }"
+    echo "}"
+  } > "${WEB_CONF}"
+  if nginx -t >/dev/null 2>&1; then
+    systemctl enable nginx >/dev/null 2>&1 || true
+    systemctl reload nginx 2>/dev/null || systemctl restart nginx 2>&1 || warn "Could not reload Nginx; run: sudo systemctl restart nginx"
+    if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active"; then
+      ufw allow "${web_port}/tcp" >/dev/null 2>&1 || true
+    fi
+    ok "Recordings are browsable, read-only, at http://$(hostname):${web_port}/"
+    if [ -n "${web_allow}" ]; then info "Access is limited to ${web_allow}."; fi
   else
-    warn "The Samba config did not validate, so ${SMB_CONF} was left unchanged."
+    warn "Nginx did not accept the new config, so it was removed again (see: sudo nginx -t)."
+    if [ -n "${web_prev}" ]; then cp "${web_prev}" "${WEB_CONF}"; else rm -f "${WEB_CONF}"; fi
   fi
-  rm -f "${smb_tmp}"
+  if [ -n "${web_prev}" ]; then rm -f "${web_prev}"; fi
 fi
 
 # ------------------------------------------------------------- service

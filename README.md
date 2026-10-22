@@ -546,6 +546,11 @@ For example:
 - **Plan for disk space.** Each station uses about 1.4 GB a day (58 MB an hour).
   `RECORD_KEEP_DAYS=14` deletes files (and `RBDS.log`s) older than 14 days, plus
   empty date folders, checked hourly. Leave it out to keep everything.
+- **Browse them in a web browser.** The installer can serve the recordings
+  folder read-only, no login, through Nginx (`http://pituner:8080/`). Folders by
+  station, year, month and day; MP3s play in the browser. It uses its own server
+  block and port and serves only `recordings/`. You can limit it to your LAN.
+  Details are in the manual (section 11).
 
 ## Troubleshooting
 
@@ -606,7 +611,7 @@ the `demux` and `redsea` decoders in `/usr/local/bin`.
 
 ## Uninstall
 
-Wipes everything Pi-Tuner installed: the service, `/opt/pituner` (with the recordings), the `pituner` user and command, the `demux` and `redsea` decoders, the logs under `/var/log` and `/var/www`, the logrotate rule, the recordings SMB share and any pituner nginx config. It then asks whether to keep Icecast and Nginx:
+Wipes everything Pi-Tuner installed: the service, `/opt/pituner` (with the recordings), the `pituner` user and command, the `demux` and `redsea` decoders, the logs under `/var/log` and `/var/www`, the logrotate rule, the recordings web listing and any pituner nginx config. It then asks whether to keep Icecast and Nginx:
 
 ```sh
 sudo ./uninstall.sh          # shows the plan, asks once, then asks about Icecast and Nginx
