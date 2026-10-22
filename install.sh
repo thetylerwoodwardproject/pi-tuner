@@ -842,6 +842,10 @@ if [ -f "${WEB_CONF}" ]; then
   web_allow="$(sed -n 's/^[[:space:]]*allow \(.*\);/\1/p' "${WEB_CONF}" | grep -v '^127\.0\.0\.1$' | paste -sd' ' -)"
   if grep -q 'location /logs/' "${WEB_CONF}"; then web_logs=1; fi
   info "The recordings web listing is already set up; refreshing it."
+  if [ "${web_logs}" = "0" ] && [ "${INTERACTIVE}" = "1" ] \
+     && confirm "  Also serve the Pi-Tuner logs, read-only, at /logs/ ?"; then
+    web_logs=1
+  fi
 elif [ "${INTERACTIVE}" = "1" ] && confirm "Serve the recordings in a web browser (read-only, no login)?"; then
   web_wanted=1
   web_port=$(ask "  Port" "${web_default_port}")

@@ -369,7 +369,8 @@ month and day; MP3s play in the browser and can be downloaded or seeked.
 - The installer also asks whether to serve the **Pi-Tuner logs** read-only at
   `/logs/` (for example `http://pituner/logs/tuner.log`, `eas-WLSU.log`). They
   open as plain text in the browser; rotated `.gz` files download. The logs listing
-  is off unless you say yes, and it follows the same network limit.
+  is off unless you say yes (the installer asks on a fresh setup and again on an
+  upgrade if it is still off), and it follows the same network limit.
   Pi-Tuner masks the Icecast password in everything it logs (`icecast://source:***@...`),
   and turning the logs listing on also masks it in the existing logs, including
   rotated ones, before they are published. The Icecast password you pasted

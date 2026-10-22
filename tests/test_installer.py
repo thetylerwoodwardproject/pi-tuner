@@ -367,6 +367,20 @@ class WebShareTests(Base):
         self.share(interactive=0, existing=self.conf_text())
         self.assertIn("location /logs/ {", self.conf_text())
 
+    def test_upgrade_offers_the_logs_listing_to_an_existing_recordings_listing(self):
+        self.share(interactive=0, env='PITUNER_WEB_RECORDINGS=1; PITUNER_WEB_PORT=80\n')
+        before = self.conf_text()
+        self.assertNotIn("/logs/", before)
+        self.share(interactive=1, confirm="n", existing=before)               # declined: unchanged
+        self.assertNotIn("/logs/", self.conf_text())
+        self.assertIn("listen 80;", self.conf_text())
+        self.share(interactive=1, confirm="y", existing=before)               # accepted
+        text = self.conf_text()
+        self.assertIn("location /logs/ {", text)
+        self.assertIn("listen 80;", text)                                     # port kept
+        r = self.share(interactive=1, confirm="n", existing=text)             # already on: not asked, stays on
+        self.assertIn("location /logs/ {", self.conf_text())
+
     def test_existing_logs_are_scrubbed_of_the_icecast_password_before_publishing(self):
         import gzip
         logs = os.path.join(self.d, "logs")
