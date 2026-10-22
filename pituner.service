@@ -4,12 +4,16 @@ After=network.target icecast2.service
 Wants=icecast2.service
 
 [Service]
-Type=simple
+Type=notify
+NotifyAccess=main
 ExecStart=/usr/bin/python3 /opt/pituner/tuner.py --dir /opt/pituner
 ExecReload=/bin/kill -HUP $MAINPID
 User=pituner
 Group=plugdev
 Restart=always
+# The supervisor pings every second; if it hangs (e.g. on a pulled USB dongle)
+# systemd restarts it.
+WatchdogSec=120
 RestartSec=5
 # Kill the whole cgroup on stop so rtl_fm/demux/ffmpeg children are cleaned up.
 KillMode=control-group

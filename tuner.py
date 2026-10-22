@@ -85,15 +85,43 @@ RBDS_PS_SETTLE_SECS = 12
 RBDS_PS_WINDOW_SECS = 60
 RBDS_PS_DYNAMIC_CHANGES = 3
 PTY_SCAN_SECS = 8.0
+ENUMERATE_SECS = 4.0
 
 # ------------------------------------------------------------------- logging
 
+_log_failed = set()
+
+
 def log_file(name, msg):
-    """Append a timestamped line to /var/www/pituner/<name>. Best-effort."""
+    """Append a timestamped line to /var/www/pituner/<name>. Best-effort.
+
+    A failure never interrupts tuning, but it is reported once per file on
+    stderr (journalctl -u pituner) so unwritable logs aren't silently blank."""
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         with open(os.path.join(LOG_DIR, name), "a") as f:
             f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+        _log_failed.discard(name)
+    except OSError as e:
+        if name not in _log_failed:
+            _log_failed.add(name)
+            print(f"cannot write {os.path.join(LOG_DIR, name)}: {e}",
+                  file=sys.stderr, flush=True)
+
+
+def sd_notify(state):
+    """Tell systemd (READY=1, WATCHDOG=1, ...) when run as a service. No-op
+    otherwise. With WatchdogSec= in the unit, systemd restarts the service if
+    the supervisor loop stops pinging, so a hang can't leave it half-alive."""
+    addr = os.environ.get("NOTIFY_SOCKET")
+    if not addr:
+        return
+    if addr.startswith("@"):
+        addr = "\0" + addr[1:]
+    try:
+        with socket.socket(socket.AF_UNIX, socket.SOCK_DGRAM) as s:
+            s.connect(addr)
+            s.sendall(state.encode())
     except OSError:
         pass
 
@@ -476,44 +504,69 @@ def norm_serial(serial):
     return str(int(serial)) if serial.isdigit() else serial
 
 
-def enumerate_devices():
+def enumerate_devices(timeout=ENUMERATE_SECS):
     """Return a list of (index, serial) from rtl_test's startup enumeration.
 
     rtl_test prints the device list to stderr and then runs forever (it begins
-    tuning), so we read merged output line by line and terminate it as soon as
-    all advertised devices have been seen (or after a short deadline).
+    tuning), so we read its output until all advertised devices have been seen
+    or ``timeout`` passes, then kill it. The read is select()-based with a hard
+    deadline: rtl_test can hang silently in libusb when a dongle is pulled, and
+    a blocking read here would freeze the whole supervisor (no logs, no Zabbix
+    heartbeat, stale "streaming" status).
     """
-    proc = subprocess.Popen(
-        ["rtl_test"],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-    )
     try:
-        count = None
-        devices = []
-        deadline = time.time() + 4.0
-        for line in proc.stdout:
-            line = line.rstrip("\n")
-            m = _RTL_FOUND_RE.match(line)
-            if m:
-                count = int(m.group(1))
-                if count == 0:
-                    break
-                continue
-            m = _RTL_DEVICE_RE.match(line)
-            if m:
-                devices.append((m.group(1), m.group(2)))
-                if count is not None and len(devices) >= count:
-                    break
-            if time.time() > deadline:
+        proc = subprocess.Popen(
+            ["rtl_test"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            start_new_session=True,
+        )
+    except OSError as e:
+        log(f"cannot run rtl_test: {e}", err=True)
+        return []
+    devices = []
+    buf = b""
+    count = None
+    fd = proc.stdout.fileno()
+    deadline = time.time() + timeout
+    try:
+        while time.time() < deadline:
+            ready, _, _ = select.select([fd], [], [], max(0.0, deadline - time.time()))
+            if not ready:
+                break
+            chunk = os.read(fd, 4096)
+            if not chunk:
+                break
+            buf += chunk
+            done = False
+            while b"\n" in buf:
+                raw, buf = buf.split(b"\n", 1)
+                line = raw.decode("utf-8", "replace").rstrip("\r")
+                m = _RTL_FOUND_RE.match(line)
+                if m:
+                    count = int(m.group(1))
+                    if count == 0:
+                        done = True
+                        break
+                    continue
+                m = _RTL_DEVICE_RE.match(line)
+                if m:
+                    devices.append((m.group(1), m.group(2)))
+                    if count is not None and len(devices) >= count:
+                        done = True
+                        break
+            if done:
                 break
     finally:
-        proc.terminate()
+        try:
+            os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
+        except (ProcessLookupError, PermissionError, OSError):
+            proc.kill()
         try:
             proc.wait(timeout=2)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            log("rtl_test would not exit after SIGKILL", err=True)
+        proc.stdout.close()
     return devices
 
 
@@ -527,17 +580,18 @@ def enumerate_devices():
 
 NO_AUDIO_SECS = 20
 NO_AUDIO_RESTART_SECS = 300
+# rtl_fm vanishing from a still-running pipeline (dongle unplugged, rtl_fm
+# crashed) for this long means the pipeline is dead: tear it down and restart.
+RTL_GONE_SECS = 15
 NO_AUDIO_DETAIL = ("rtl_fm is producing no audio: the dongle opened but delivers no "
                    "samples (check its USB port/power, or replace it)")
 
 
-def rtl_fm_bytes_written(shell_pid, proc_root="/proc"):
-    """Bytes written so far by the rtl_fm in a station's pipeline, or None.
+def rtl_fm_pid(shell_pid, proc_root="/proc"):
+    """Pid of the rtl_fm in a station's pipeline, or None if there is none.
 
     The pipeline runs as ``bash -c 'rtl_fm ... | ...'``, so rtl_fm is a child of
-    ``shell_pid`` (or that pid itself). None means "can't tell" (no such
-    process yet, /proc/<pid>/io unreadable); callers must not treat it as silence.
-    """
+    ``shell_pid`` (or that pid itself)."""
     try:
         names = os.listdir(proc_root)
     except OSError:
@@ -550,14 +604,29 @@ def rtl_fm_bytes_written(shell_pid, proc_root="/proc"):
                 stat = f.read()
             comm = stat[stat.index("(") + 1:stat.rindex(")")]
             ppid = int(stat[stat.rindex(")") + 2:].split()[1])
-            if comm != "rtl_fm" or (ppid != shell_pid and int(name) != shell_pid):
-                continue
-            with open(f"{proc_root}/{name}/io") as f:
-                for line in f:
-                    if line.startswith("wchar:"):
-                        return int(line.split()[1])
         except (OSError, ValueError, IndexError):
             continue
+        if comm == "rtl_fm" and (ppid == shell_pid or int(name) == shell_pid):
+            return int(name)
+    return None
+
+
+def rtl_fm_bytes_written(shell_pid, proc_root="/proc"):
+    """Bytes written so far by the rtl_fm in a station's pipeline, or None.
+
+    None means "can't tell" (no such process yet, /proc/<pid>/io unreadable);
+    callers must not treat it as silence.
+    """
+    pid = rtl_fm_pid(shell_pid, proc_root)
+    if pid is None:
+        return None
+    try:
+        with open(f"{proc_root}/{pid}/io") as f:
+            for line in f:
+                if line.startswith("wchar:"):
+                    return int(line.split()[1])
+    except (OSError, ValueError, IndexError):
+        pass
     return None
 
 
@@ -2062,6 +2131,7 @@ class Station:
         self.retry_at = 0.0
         self.backoff = 2.0
         self.restarts = 0         # pipeline deaths since the service started
+        self.rtl_gone_at = None   # when rtl_fm was first missing from a live pipeline
         self.genre = _genre_for(cfg)
 
 
@@ -2177,6 +2247,7 @@ class Tuner:
             st.backoff = min(st.backoff * 2, 60)
             return
         st.audio_bytes, st.audio_at = None, time.time()
+        st.rtl_gone_at = None
         if st.status != "no_audio":    # a silent dongle stays "no_audio" until audio flows
             self.set_status(st, "streaming", f"device {index} {st.cfg['band']} {st.cfg['freq']} MHz")
         st.backoff = 2.0
@@ -2207,7 +2278,21 @@ class Tuner:
         """Flag a running pipeline whose rtl_fm has stopped producing audio."""
         written = rtl_fm_bytes_written(st.proc.pid)
         if written is None:
+            if rtl_fm_pid(st.proc.pid) is not None:
+                st.rtl_gone_at = None      # running, just can't read its counters
+                return
+            if st.rtl_gone_at is None:
+                st.rtl_gone_at = now
+            elif now - st.rtl_gone_at >= RTL_GONE_SECS:
+                log(f"station {st.name}: rtl_fm is gone but the pipeline is still up "
+                    "(dongle unplugged?), restarting it", err=True)
+                self.stop_station(st)
+                st.restarts += 1
+                self.set_status(st, "down", "rtl_fm exited (dongle unplugged?)")
+                st.retry_at = now + st.backoff
+                st.backoff = min(st.backoff * 2, 60)
             return
+        st.rtl_gone_at = None
         if st.audio_bytes is None or written != st.audio_bytes:
             st.audio_bytes, st.audio_at = written, now
             if st.status == "no_audio":
@@ -2289,13 +2374,18 @@ class Tuner:
         next_prune = 0.0
         self.running = True
         self.alerts.service_started({st.name: st.status for st in self.stations})
+        sd_notify("READY=1")
         while self.running:
             if self.reload_requested:
                 self.reload_requested = False
                 self.reload()
                 self._next_heartbeat = time.time() + self.zbx.interval
                 continue
-            self.poll()
+            try:
+                self.poll()
+            except Exception as e:  # noqa: BLE001 - one bad pass must not kill supervision
+                log(f"supervisor error: {type(e).__name__}: {e}", err=True)
+            sd_notify("WATCHDOG=1")
             now = time.time()
             self.alerts.tick(now)
             self.alerts.check_disk(now, self.dir, any(st.cfg.get("record") for st in self.stations))

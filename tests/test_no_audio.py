@@ -115,9 +115,23 @@ class WatchdogTests(unittest.TestCase):
         self.assertEqual(self.st.status, "streaming")
 
     def test_unreadable_counter_never_counts_as_silence(self):
-        self.check(None, 1000.0)
-        self.check(None, 9999.0)
+        with mock.patch.object(tuner, "rtl_fm_pid", return_value=4243):
+            self.check(None, 1000.0)
+            self.check(None, 9999.0)
         self.assertEqual(self.st.status, "streaming")
+
+    def test_vanished_rtl_fm_restarts_the_pipeline(self):
+        # Dongle pulled: rtl_fm is gone but the shell pipeline is still alive.
+        with mock.patch.object(tuner, "rtl_fm_pid", return_value=None), \
+                mock.patch.object(self.t, "stop_station") as stop:
+            self.check(None, 1000.0)
+            self.check(None, 1000.0 + tuner.RTL_GONE_SECS - 1)
+            self.assertEqual(self.st.status, "streaming")
+            stop.assert_not_called()
+            self.check(None, 1000.0 + tuner.RTL_GONE_SECS)
+            stop.assert_called_once_with(self.st)
+        self.assertEqual(self.st.status, "down")
+        self.assertEqual(self.st.restarts, 1)
 
     def test_restart_attempt_while_it_stays_silent(self):
         self.check(0, 1000.0)
@@ -179,3 +193,27 @@ class AlertTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EnumerateDevicesTests(unittest.TestCase):
+    def fake_rtl_test(self, script):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        path = os.path.join(d, "rtl_test")
+        with open(path, "w") as f:
+            f.write("#!/bin/sh\n" + script + "\n")
+        os.chmod(path, 0o755)
+        p = mock.patch.dict(os.environ, {"PATH": d + os.pathsep + os.environ["PATH"]})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_lists_devices(self):
+        self.fake_rtl_test("echo 'Found 1 device(s):'; "
+                           "echo '  0:  Realtek, RTL2838UHIDIR, SN: 00001039'; sleep 30")
+        self.assertEqual(tuner.enumerate_devices(timeout=5), [("0", "00001039")])
+
+    def test_hung_rtl_test_cannot_block_the_supervisor(self):
+        self.fake_rtl_test("sleep 30")            # silent, like a wedged libusb
+        t0 = time.time()
+        self.assertEqual(tuner.enumerate_devices(timeout=1), [])
+        self.assertLess(time.time() - t0, 6)
