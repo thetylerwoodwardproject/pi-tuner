@@ -517,6 +517,50 @@ def enumerate_devices():
     return devices
 
 
+# ------------------------------------------------------------ audio watchdog
+# A dongle can open and tune normally yet never deliver samples (bad USB power
+# or port, a failed stick). rtl_fm then sits idle, ffmpeg never connects to
+# Icecast and the station looks "streaming" while silent. We watch the bytes
+# rtl_fm writes: if none appear for NO_AUDIO_SECS the station goes to the
+# "no_audio" state (log, Zabbix, email); the pipeline is retried every
+# NO_AUDIO_RESTART_SECS while it stays silent.
+
+NO_AUDIO_SECS = 20
+NO_AUDIO_RESTART_SECS = 300
+NO_AUDIO_DETAIL = ("rtl_fm is producing no audio: the dongle opened but delivers no "
+                   "samples (check its USB port/power, or replace it)")
+
+
+def rtl_fm_bytes_written(shell_pid, proc_root="/proc"):
+    """Bytes written so far by the rtl_fm in a station's pipeline, or None.
+
+    The pipeline runs as ``bash -c 'rtl_fm ... | ...'``, so rtl_fm is a child of
+    ``shell_pid`` (or that pid itself). None means "can't tell" (no such
+    process yet, /proc/<pid>/io unreadable); callers must not treat it as silence.
+    """
+    try:
+        names = os.listdir(proc_root)
+    except OSError:
+        return None
+    for name in names:
+        if not name.isdigit():
+            continue
+        try:
+            with open(f"{proc_root}/{name}/stat") as f:
+                stat = f.read()
+            comm = stat[stat.index("(") + 1:stat.rindex(")")]
+            ppid = int(stat[stat.rindex(")") + 2:].split()[1])
+            if comm != "rtl_fm" or (ppid != shell_pid and int(name) != shell_pid):
+                continue
+            with open(f"{proc_root}/{name}/io") as f:
+                for line in f:
+                    if line.startswith("wchar:"):
+                        return int(line.split()[1])
+        except (OSError, ValueError, IndexError):
+            continue
+    return None
+
+
 # ------------------------------------------------------------- station config
 
 def load_stations(stations_dir):
@@ -641,7 +685,7 @@ def tuner_id(mount):
 # metric -> (value kind, description). One source for the sender, the Zabbix
 # template and the tests. Kinds: char, text, uint, float.
 TUNER_METRICS = {
-    "state": ("char", "Pipeline state: streaming, down, serial_not_found or stopped"),
+    "state": ("char", "Pipeline state: streaming, down, serial_not_found, no_audio or stopped"),
     "up": ("uint", "1 while the tuner is streaming, otherwise 0"),
     "name": ("char", "Station name from the station file"),
     "band": ("char", "fm or wx"),
@@ -1004,7 +1048,7 @@ class AlertManager:
                     f"It was down for {_fmt_duration(now - rec['since'])}.\n"
                     f"Time: {time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(now))}")
             self.stations.pop(name, None)
-        elif status in ("down", "serial_not_found"):
+        elif status in ("down", "serial_not_found", "no_audio"):
             if rec is None:
                 self.stations[name] = {"status": status, "detail": detail,
                                        "since": now, "alerted": False}
@@ -1018,8 +1062,9 @@ class AlertManager:
         for name, rec in self.stations.items():
             if not rec["alerted"] and now - rec["since"] >= self.mailer.down_delay:
                 rec["alerted"] = True
-                what = ("its dongle serial was not found" if rec["status"] == "serial_not_found"
-                        else "its stream stopped")
+                what = {"serial_not_found": "its dongle serial was not found",
+                        "no_audio": "its dongle is not delivering any audio"
+                        }.get(rec["status"], "its stream stopped")
                 self.mailer.send(
                     f"{name} is DOWN",
                     f"Station {name} has been down for {_fmt_duration(now - rec['since'])}: "
@@ -2011,7 +2056,9 @@ class Station:
         self.cfg = cfg
         self.name = cfg["name"]
         self.proc = None          # subprocess.Popen while running
-        self.status = "stopped"   # streaming | down | serial_not_found
+        self.status = "stopped"   # streaming | down | serial_not_found | no_audio
+        self.audio_bytes = None   # rtl_fm bytes written at the last change
+        self.audio_at = 0.0       # when audio last advanced (or the pipeline started)
         self.retry_at = 0.0
         self.backoff = 2.0
         self.restarts = 0         # pipeline deaths since the service started
@@ -2129,7 +2176,9 @@ class Tuner:
             st.retry_at = time.time() + st.backoff
             st.backoff = min(st.backoff * 2, 60)
             return
-        self.set_status(st, "streaming", f"device {index} {st.cfg['band']} {st.cfg['freq']} MHz")
+        st.audio_bytes, st.audio_at = None, time.time()
+        if st.status != "no_audio":    # a silent dongle stays "no_audio" until audio flows
+            self.set_status(st, "streaming", f"device {index} {st.cfg['band']} {st.cfg['freq']} MHz")
         st.backoff = 2.0
 
     def stop_station(self, st):
@@ -2154,6 +2203,27 @@ class Tuner:
 
     # -- supervisor -------------------------------------------------------
 
+    def check_audio(self, st, now):
+        """Flag a running pipeline whose rtl_fm has stopped producing audio."""
+        written = rtl_fm_bytes_written(st.proc.pid)
+        if written is None:
+            return
+        if st.audio_bytes is None or written != st.audio_bytes:
+            st.audio_bytes, st.audio_at = written, now
+            if st.status == "no_audio":
+                self.set_status(st, "streaming", "audio is flowing again")
+            return
+        silent = now - st.audio_at
+        if silent < NO_AUDIO_SECS:
+            return
+        if st.status != "no_audio":
+            log(f"station {st.name}: ERROR no audio for {int(silent)}s - {NO_AUDIO_DETAIL}", err=True)
+            self.set_status(st, "no_audio", NO_AUDIO_DETAIL)
+        elif silent >= NO_AUDIO_RESTART_SECS:
+            log(f"station {st.name}: still no audio, restarting its pipeline", err=True)
+            self.stop_station(st)
+            st.retry_at = now
+
     def poll(self):
         for st in self.stations:
             if st.proc is not None:
@@ -2164,6 +2234,8 @@ class Tuner:
                     self.set_status(st, "down", f"exit code {rc}")
                     st.retry_at = time.time() + st.backoff
                     st.backoff = min(st.backoff * 2, 60)
+                else:
+                    self.check_audio(st, time.time())
             elif time.time() >= st.retry_at:
                 self.refresh_devices()
                 self.start_station(st)

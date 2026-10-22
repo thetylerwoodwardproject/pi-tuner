@@ -1,0 +1,181 @@
+import os
+import shutil
+import subprocess
+import sys
+import tempfile
+import time
+import unittest
+from unittest import mock
+
+sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+import tuner  # noqa: E402
+
+CFG = {"name": "W300BM", "band": "fm", "freq": 107.9, "mount": "/tuner3",
+       "serial": "00001039"}
+
+
+def fake_proc(root, pid, ppid, comm, wchar=None):
+    d = os.path.join(root, str(pid))
+    os.makedirs(d)
+    with open(os.path.join(d, "stat"), "w") as f:
+        f.write(f"{pid} ({comm}) S {ppid} {pid} {pid} 0 -1 4194560\n")
+    if wchar is not None:
+        with open(os.path.join(d, "io"), "w") as f:
+            f.write(f"rchar: 1\nwchar: {wchar}\nsyscr: 1\n")
+
+
+class BytesWrittenTests(unittest.TestCase):
+    def setUp(self):
+        self.root = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.root, ignore_errors=True)
+
+    def test_finds_rtl_fm_child_of_the_station_shell(self):
+        fake_proc(self.root, 100, 1, "bash")
+        fake_proc(self.root, 101, 100, "rtl_fm", wchar=4096)
+        fake_proc(self.root, 102, 100, "ffmpeg", wchar=9)
+        fake_proc(self.root, 201, 200, "rtl_fm", wchar=777)        # another station's
+        self.assertEqual(tuner.rtl_fm_bytes_written(100, self.root), 4096)
+
+    def test_comm_with_spaces_and_parens_is_parsed(self):
+        fake_proc(self.root, 100, 1, "bash")
+        fake_proc(self.root, 101, 100, "(sd-pam) x", wchar=1)
+        fake_proc(self.root, 102, 100, "rtl_fm", wchar=5)
+        self.assertEqual(tuner.rtl_fm_bytes_written(100, self.root), 5)
+
+    def test_rtl_fm_that_is_the_shell_itself(self):
+        fake_proc(self.root, 100, 1, "rtl_fm", wchar=33)
+        self.assertEqual(tuner.rtl_fm_bytes_written(100, self.root), 33)
+
+    def test_unknown_when_no_rtl_fm_or_io_unreadable(self):
+        fake_proc(self.root, 100, 1, "bash")
+        self.assertIsNone(tuner.rtl_fm_bytes_written(100, self.root))
+        fake_proc(self.root, 101, 100, "rtl_fm", wchar=None)      # no io file
+        self.assertIsNone(tuner.rtl_fm_bytes_written(100, self.root))
+        self.assertIsNone(tuner.rtl_fm_bytes_written(100, os.path.join(self.root, "nope")))
+
+    @unittest.skipUnless(os.path.isdir("/proc/self"), "needs /proc")
+    def test_reads_a_real_process(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        fake = os.path.join(d, "rtl_fm")
+        shutil.copy(shutil.which("sleep"), fake)
+        p = subprocess.Popen(["bash", "-c", f"{fake} 5; true"])
+        self.addCleanup(lambda: (p.kill(), p.wait()))
+        got = None
+        for _ in range(50):
+            got = tuner.rtl_fm_bytes_written(p.pid)
+            if got is not None:
+                break
+            time.sleep(0.1)
+        self.assertIsInstance(got, int)
+
+
+class WatchdogTests(unittest.TestCase):
+    def setUp(self):
+        self.d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.d, ignore_errors=True)
+        self.t = tuner.Tuner(self.d)
+        self.st = tuner.Station(dict(CFG))
+        self.st.proc = mock.Mock(pid=4242)
+        self.st.status = "streaming"
+        self.st.audio_at = 1000.0
+        self.logs = []
+        p = mock.patch.object(tuner, "log", lambda m, err=False: self.logs.append(m))
+        p.start()
+        self.addCleanup(p.stop)
+
+    def check(self, written, now):
+        with mock.patch.object(tuner, "rtl_fm_bytes_written", return_value=written):
+            self.t.check_audio(self.st, now)
+
+    def test_flowing_audio_stays_streaming(self):
+        for i, b in enumerate((100, 200, 300, 400)):
+            self.check(b, 1000.0 + i * 30)
+        self.assertEqual(self.st.status, "streaming")
+
+    def test_silent_dongle_is_flagged_after_the_window(self):
+        self.check(0, 1000.0)                     # first reading
+        self.check(0, 1000.0 + tuner.NO_AUDIO_SECS - 1)
+        self.assertEqual(self.st.status, "streaming")
+        self.check(0, 1000.0 + tuner.NO_AUDIO_SECS)
+        self.assertEqual(self.st.status, "no_audio")
+        self.assertTrue(any("ERROR no audio" in m for m in self.logs))
+
+    def test_flag_is_raised_once(self):
+        self.check(0, 1000.0)
+        self.check(0, 1030.0)
+        self.check(0, 1060.0)
+        self.assertEqual(sum("ERROR no audio" in m for m in self.logs), 1)
+
+    def test_recovers_when_audio_returns(self):
+        self.check(0, 1000.0)
+        self.check(0, 1030.0)
+        self.assertEqual(self.st.status, "no_audio")
+        self.check(5000, 1040.0)
+        self.assertEqual(self.st.status, "streaming")
+
+    def test_unreadable_counter_never_counts_as_silence(self):
+        self.check(None, 1000.0)
+        self.check(None, 9999.0)
+        self.assertEqual(self.st.status, "streaming")
+
+    def test_restart_attempt_while_it_stays_silent(self):
+        self.check(0, 1000.0)
+        self.check(0, 1030.0)
+        self.assertEqual(self.st.status, "no_audio")
+        with mock.patch.object(self.t, "stop_station") as stop:
+            self.check(0, 1000.0 + tuner.NO_AUDIO_RESTART_SECS)
+        stop.assert_called_once_with(self.st)
+        self.assertEqual(self.st.retry_at, 1000.0 + tuner.NO_AUDIO_RESTART_SECS)
+
+    def test_restarting_a_silent_station_does_not_report_streaming(self):
+        self.st.status = "no_audio"
+        self.st.cfg.update(rbds=False)
+        self.t.devices = [("0", "00001039")]
+        with mock.patch.object(tuner.subprocess, "Popen", return_value=mock.Mock(pid=1)), \
+                mock.patch.object(self.t, "resolve_serial", return_value=0):
+            self.t.start_station(self.st)
+        self.assertEqual(self.st.status, "no_audio")
+        self.assertIsNone(self.st.audio_bytes)
+
+    def test_no_audio_is_not_up_in_zabbix(self):
+        items = dict(self.t.zbx.state_items(
+            {"id": "tuner3", "state": "no_audio"}))
+        self.assertEqual(items["pituner.tuner.up[tuner3]"], 0)
+
+    def test_poll_checks_running_stations_only(self):
+        self.t.stations = [self.st]
+        self.st.proc = mock.Mock(pid=4242, poll=mock.Mock(return_value=None))
+        with mock.patch.object(self.t, "check_audio") as chk:
+            self.t.poll()
+        chk.assert_called_once()
+        self.st.proc.poll.return_value = 1
+        with mock.patch.object(self.t, "check_audio") as chk:
+            self.t.poll()
+        chk.assert_not_called()
+        self.assertEqual(self.st.status, "down")
+
+
+class AlertTests(unittest.TestCase):
+    def test_no_audio_sends_a_down_email_that_names_the_cause(self):
+        sent = []
+
+        class FakeMailer:
+            enabled, alert_station, down_delay = True, True, 60
+
+            def send(self, subject, body):
+                sent.append((subject, body))
+
+        am = tuner.AlertManager(FakeMailer())
+        am.station_status("W300BM", "no_audio", tuner.NO_AUDIO_DETAIL, 0)
+        am.tick(30)
+        self.assertEqual(sent, [])
+        am.tick(61)
+        self.assertEqual(sent[0][0], "W300BM is DOWN")
+        self.assertIn("not delivering any audio", sent[0][1])
+        am.station_status("W300BM", "streaming", "", 120)
+        self.assertEqual(sent[1][0], "W300BM is back up")
+
+
+if __name__ == "__main__":
+    unittest.main()
