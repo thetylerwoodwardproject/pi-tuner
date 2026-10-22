@@ -1596,6 +1596,11 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
     def report_same(header, now):
         info = parse_same(header)
         if info is None:
+            # Bit errors can leave a header that matches the format but isn't a
+            # valid message; keep the raw text rather than losing the alert.
+            msg = f"SAME header heard on {name} but could not be decoded [{header}]"
+            print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
+            log_eas(name, msg)
             return
         summary = same_summary(info)
         msg = f"EAS message on {name}: {summary}"
@@ -1645,7 +1650,8 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
             msg = f"EAS attention tone heard on {name}"
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}",
                   file=sys.stderr, flush=True)
-            log_eas(name, msg)
+            log_eas(name, msg + (" (SAME header decoded)" if collector.recent(now)
+                                 else " (no SAME header decoded)"))
             if zbx.enabled:
                 zbx.send(eas_items(1) + [(zbx.key_event, msg)])
             # A decoded SAME email already covers this alert; send the bare
