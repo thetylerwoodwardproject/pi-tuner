@@ -294,7 +294,7 @@ rtl_fm ──┬──▶ demux ──▶ ffmpeg ──▶ Icecast  (audio)
   `RBDS=true`, the genre is `Radio`. WX stations are always `Weather`.
 
 Check it at `http://<pi>:8000/status-json.xsl` (see `title` and `genre`) or with
-`tail -f /var/www/pituner/rbds.log`.
+`tail -f /var/log/pituner/rbds.log`.
 
 RBDS needs a clean signal. Some stations send only a PS, or ads and slogans in
 RT; Pi-Tuner shows whatever is sent. Without `redsea` installed, a station with
@@ -368,7 +368,7 @@ confirms two in a row. On detection it:
 - sets `pituner.eas = 1` (that tuner's `eas` item and the host-wide one) in
   Zabbix for about 10 seconds, then back to `0`, so a `last()=1` trigger fires
   and recovers;
-- logs the detection in `eas.log` and sends a `pituner.event`;
+- logs the detection in `eas.log` and in that station's `eas-NAME.log`, and sends a `pituner.event`;
 - sends a tone email, unless a SAME email already covers the alert (below).
 
 After a detection it ignores the tone for 60 seconds so one alert gives one
@@ -426,7 +426,7 @@ never reported. The same message isn't reported again for two minutes.
   ```
 
 - A `pituner.event` item in Zabbix with a one-line summary.
-- A line in `eas.log` with the summary and the raw header.
+- A line in `eas.log` and in the station's `eas-NAME.log` with the summary and the raw header.
 
 Counties are shown as their 3-digit FIPS code, for example
 `Louisiana, county 071 (FIPS 22071)`. States and event types are named. The
@@ -545,12 +545,13 @@ An unreachable Zabbix never affects tuning; sends are best-effort and logged.
 
 ## 15. Logs
 
-Rotating logs are kept under `/var/www/pituner/`:
+Rotating logs are kept under `/var/log/pituner/`: (older versions used `/var/www/pituner/`; the installer moves existing logs over)
 
 | File | Contents |
 |------|----------|
 | `tuner.log` | Tuner health: station status changes, restarts, reloads |
-| `eas.log` | EAS attention-tone detections, decoded SAME messages and end-of-message markers |
+| `eas.log` | EAS attention-tone detections, decoded SAME messages and end-of-message markers, all stations |
+| `eas-NAME.log` | The same events for one station, e.g. `eas-WLSU.log`, so each tuner keeps its own history. Each line ends with `[recording: ...]`, the MP3 (when the station records) that holds the audio, so you can confirm the alert aired |
 | `zabbix.log` | Mirror of what is sent to Zabbix (events only, not status snapshots) |
 | `rbds.log` | RBDS now-playing updates sent to Icecast, and any update failures |
 | `recordings.log` | Recording problems (disk full, encoder errors) |
@@ -635,7 +636,7 @@ All files live in `/opt/pituner/` and use `KEY=value` lines. Comments start with
 /etc/systemd/system/pituner.service   # systemd unit
 /usr/local/bin/pituner                # the `pituner` command
 /usr/local/bin/demux, redsea          # FM stereo and RBDS decoders
-/var/www/pituner/                     # logs
+/var/log/pituner/                     # logs
 ```
 
 The repository also has `install.sh`, `uninstall.sh`, `logrotate.conf`, `docs/`
@@ -650,11 +651,11 @@ and `tests/` (`python3 -m unittest discover -s tests`).
 | Config doesn't parse | `sudo pituner check` |
 | No audio, or stream missing | `http://<pi>:8000/status-json.xsl` in a browser |
 | Changes didn't apply | `sudo systemctl reload pituner.service` (restart for Zabbix and email changes) |
-| No now-playing text | `which redsea`, then `tail /var/www/pituner/rbds.log` |
+| No now-playing text | `which redsea`, then `tail /var/log/pituner/rbds.log` |
 | FM genre is just `Radio` | No PTY heard; look for `RBDS PTY:` in `journalctl -u pituner` |
-| No recordings | Is `RECORD=true` set and reloaded? `tail /var/www/pituner/recordings.log`; `df -h` |
+| No recordings | Is `RECORD=true` set and reloaded? `tail /var/log/pituner/recordings.log`; `df -h` |
 | No `RBDS.log` | FM station with both `RBDS=true` and `RECORD=true`? Is `redsea` installed? |
-| No alert emails | `sudo pituner test-email`; `tail /var/www/pituner/email.log` |
+| No alert emails | `sudo pituner test-email`; `tail /var/log/pituner/email.log` |
 | EAS tone email but no decoded message | The header wasn't received cleanly. Improve the antenna or `GAIN`; check `eas.log` |
 | No EAS emails at all | `ALERT_EAS=true` and email `ENABLED=true` in `smtp.conf`, or `EAS_DETECT=true` with Zabbix enabled; restart the service |
 | Duplicate EAS emails | The same alert is suppressed for 2 minutes; a different message or a repeat after that sends again |

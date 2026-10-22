@@ -168,6 +168,79 @@ class DetectorTests(unittest.TestCase):
         logged = " ".join(str(c.args) for c in lf.call_args_list)
         self.assertIn("Tornado Warning", logged)
 
+    def test_events_are_logged_per_station_and_combined(self):
+        rate = 25000
+        now = datetime.datetime.now(UTC)
+        stamp = f"{now.timetuple().tm_yday:03d}{now.hour:02d}{now.minute:02d}"
+        header = f"ZCZC-WXR-TOR-022071+0030-{stamp}-KLOX/NWS-"
+        pcm = same_audio.burst_stream(header, rate) + self.tone(rate, 3)
+        _, lf = self.run_detector(pcm, rate)
+        files = {}
+        for c in lf.call_args_list:
+            files.setdefault(c.args[0], []).append(c.args[1])
+        self.assertEqual(set(files), {"eas.log", "eas-WLSU.log"})
+        self.assertEqual(files["eas.log"], files["eas-WLSU.log"])
+        joined = " ".join(files["eas-WLSU.log"])
+        self.assertIn("Tornado Warning", joined)
+        self.assertIn("attention tone heard on WLSU", joined)
+
+    def test_tone_line_says_whether_a_header_came_with_it(self):
+        rate = 25000
+        now = datetime.datetime.now(UTC)
+        stamp = f"{now.timetuple().tm_yday:03d}{now.hour:02d}{now.minute:02d}"
+        header = f"ZCZC-WXR-TOR-022071+0030-{stamp}-KLOX/NWS-"
+        _, lf = self.run_detector(same_audio.burst_stream(header, rate) + self.tone(rate, 3), rate)
+        tones = [c.args[1] for c in lf.call_args_list if "attention tone" in c.args[1]]
+        self.assertTrue(tones and all(t.endswith("(SAME header decoded)") for t in tones), tones)
+        _, lf = self.run_detector(self.tone(8000, 3), 8000)
+        tones = [c.args[1] for c in lf.call_args_list if "attention tone" in c.args[1]]
+        self.assertTrue(tones and all(t.endswith("(no SAME header decoded)") for t in tones), tones)
+
+    def test_undecodable_header_is_logged_not_dropped(self):
+        rate = 25000
+        header = "ZCZC-WXR-TOR-022071+0030-9992599-KLOX/NWS-"   # day 999: valid shape, invalid content
+        _, lf = self.run_detector(same_audio.burst_stream(header, rate), rate)
+        logged = [c.args for c in lf.call_args_list]
+        self.assertTrue(any("could not be decoded" in m and header in m for _, m in logged), logged)
+        self.assertEqual({n for n, _ in logged}, {"eas.log", "eas-WLSU.log"})
+
+    def test_log_lines_point_at_the_recording(self):
+        rate = 25000
+        now = datetime.datetime.now(UTC)
+        stamp = f"{now.timetuple().tm_yday:03d}{now.hour:02d}{now.minute:02d}"
+        header = f"ZCZC-CIV-RWT-022071+0015-{stamp}-WLSU-"
+        pcm = same_audio.burst_stream(header, rate) + self.tone(rate, 3)
+        rec = "recordings/WLSU/2026/10/22/261022_150000_WLSU.mp3"
+        with mock.patch.object(tuner, "recording_covering", return_value=rec):
+            _, lf = self.run_detector(pcm, rate)
+        lines = [c.args[1] for c in lf.call_args_list if c.args[0] == "eas-WLSU.log"]
+        self.assertTrue(lines and all(l.endswith(f"[recording: {rec}]") for l in lines), lines)
+        self.assertTrue(any("Required Weekly Test" in l for l in lines))
+
+    def test_recording_covering_picks_the_file_in_progress(self):
+        with tempfile.TemporaryDirectory() as d:
+            when = time.mktime((2026, 10, 22, 15, 7, 30, 0, 0, -1))
+            day = os.path.join(d, "recordings", "WLSU", "2026", "10", "22")
+            os.makedirs(day)
+            for n in ("261022_144500_WLSU.mp3", "261022_150000_WLSU.mp3", "261022_151500_WLSU.mp3"):
+                open(os.path.join(day, n), "w").close()
+            self.assertEqual(tuner.recording_covering(d, "WLSU", when),
+                             os.path.join("recordings", "WLSU", "2026", "10", "22",
+                                          "261022_150000_WLSU.mp3"))
+            self.assertEqual(tuner.recording_covering(d, "NOPE", when), "")
+
+    def test_station_log_name_is_filesystem_safe(self):
+        self.assertEqual(tuner.eas_log_name("WLSU"), "eas-WLSU.log")
+        self.assertEqual(tuner.eas_log_name("My Station/../x"), "eas-My_Station..x.log")
+
+    def test_logrotate_covers_the_station_logs(self):
+        import fnmatch
+        root = os.path.join(os.path.dirname(__file__), "..")
+        with open(os.path.join(root, "logrotate.conf")) as f:
+            globs = [l.split("{")[0].strip() for l in f if l.strip().startswith("/")]
+        path = os.path.join(tuner.LOG_DIR, tuner.eas_log_name("WLSU"))
+        self.assertTrue(any(fnmatch.fnmatch(path, g) for g in globs), globs)
+
     def test_tone_alone_still_sends_the_tone_email(self):
         fake, _ = self.run_detector(self.tone(8000, 3), 8000)
         self.assertEqual([s for s, _ in fake.sent], ["EAS attention tone heard on WLSU"])
