@@ -366,11 +366,19 @@ month and day; MP3s play in the browser and can be downloaded or seeked.
   first, so move or remove it yourself.
 - Only the recordings folder is served. Configuration, logs and everything else
   stay private; dotfiles are blocked, and anything other than GET and HEAD is refused.
+- The installer also asks whether to serve the **Pi-Tuner logs** read-only at
+  `/logs/` (for example `http://pituner/logs/tuner.log`, `eas-WLSU.log`). They
+  open as plain text in the browser; rotated `.gz` files download. The logs listing
+  is off unless you say yes, and it follows the same network limit.
+  Pi-Tuner masks the Icecast password in everything it logs (`icecast://source:***@...`),
+  and turning the logs listing on also masks it in the existing logs, including
+  rotated ones, before they are published. The Icecast password you pasted
+  anywhere earlier is still valid, so change it if it was shared.
 - You can limit it to your LAN, e.g. `192.168.1.0/24`, when the installer asks.
   Without a limit, anyone who can reach the Pi can browse the recordings.
 - If ufw is active the port is opened. Nginx's own request log for the listing is
   `/var/log/nginx/pituner-recordings.access.log`.
-- Unattended: `PITUNER_WEB_RECORDINGS=1 PITUNER_WEB_PORT=80 PITUNER_WEB_ALLOW=192.168.1.0/24 sudo ./install.sh`.
+- Unattended: `PITUNER_WEB_RECORDINGS=1 PITUNER_WEB_LOGS=1 PITUNER_WEB_PORT=80 PITUNER_WEB_ALLOW=192.168.1.0/24 sudo ./install.sh`.
 - To change the port or network later, run the installer again with
   `PITUNER_WEB_PORT=...` / `PITUNER_WEB_ALLOW=...` (it refreshes the listing and
   keeps what you don't override) or edit the conf file and `sudo systemctl reload nginx`.

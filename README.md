@@ -579,7 +579,9 @@ For example:
   station, year, month and day; MP3s play in the browser. It uses its own server
   block (port 80 when the installer installs Nginx, otherwise 8080) and serves
   only `recordings/`. You can limit it to your LAN.
-  Details are in the manual (section 11).
+  The installer can also publish the logs at `/logs/` (plain text, read-only,
+  same network limit); Pi-Tuner masks the Icecast password in every log line, and
+  scrubs existing logs before publishing them. Details are in the manual (section 11).
 
 ## Troubleshooting
 

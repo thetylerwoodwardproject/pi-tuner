@@ -92,6 +92,15 @@ ENUMERATE_SECS = 4.0
 _log_failed = set()
 
 
+_URL_SECRET_RE = re.compile(r"(://[^:/@\s]+:)[^@\s]+@")
+
+
+def redact_secrets(text):
+    """Mask the password in user:password@host URLs, e.g. the Icecast source URL
+    in a pipeline command, so logs can be read (or served) without leaking it."""
+    return _URL_SECRET_RE.sub(r"\1***@", text)
+
+
 def log_file(name, msg):
     """Append a timestamped line to /var/log/pituner/<name>. Best-effort.
 
@@ -100,7 +109,7 @@ def log_file(name, msg):
     try:
         os.makedirs(LOG_DIR, exist_ok=True)
         with open(os.path.join(LOG_DIR, name), "a") as f:
-            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}\n")
+            f.write(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {redact_secrets(str(msg))}\n")
         _log_failed.discard(name)
     except OSError as e:
         if name not in _log_failed:
@@ -127,6 +136,7 @@ def sd_notify(state):
 
 
 def log(msg, err=False):
+    msg = redact_secrets(str(msg))
     print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}",
           file=sys.stderr if err else sys.stdout, flush=True)
     log_file("tuner.log", msg)
