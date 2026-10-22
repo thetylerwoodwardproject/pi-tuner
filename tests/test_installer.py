@@ -174,6 +174,52 @@ class IcecastKeepTests(Base):
         self.assertIn("<source-password>GENERATED</source-password>", read(xml))
 
 
+class IcecastMissingXmlTests(IcecastKeepTests):
+    """icecast.xml deleted (e.g. the old Icecast was purged): the installer must recreate it."""
+
+    def backup(self):
+        return os.path.join(self.app, "icecast.xml.backup")
+
+    def test_fresh_creates_a_complete_config_when_missing(self):
+        r, xml = self.run_step(keep=0)
+        text = read(xml)
+        self.assertIn("<source-password>GENERATED</source-password>", text)
+        self.assertIn("<admin-password>GENERATED</admin-password>", text)
+        self.assertIn("<port>8000</port>", text)
+        self.assertIn("<sources>20</sources>", text)
+        self.assertTrue(os.path.exists(self.backup()))
+        self.assertEqual(read(self.backup()), text)
+
+    def test_upgrade_creates_config_with_the_existing_password_from_icecast_conf(self):
+        self.existing_install()
+        r, xml = self.run_step(keep=1)
+        self.assertIn("<source-password>keepme</source-password>", read(xml))
+        self.assertIn("SOURCE_PASS=keepme", r.stdout)
+        self.assertIn("SYSTEMCTL restart icecast2", self.calls_text())   # must be restarted to load it
+
+    def test_upgrade_restores_from_the_opt_backup_with_the_current_password(self):
+        self.existing_install()
+        write(self.backup(), self.XML.replace("fromxml", "stalepw"))
+        r, xml = self.run_step(keep=1)
+        text = read(xml)
+        self.assertIn("<source-password>keepme</source-password>", text)
+        self.assertIn("<admin-password>adminpw</admin-password>", text)
+        self.assertIn("Restored", r.stdout)
+
+    def test_upgrade_with_no_password_anywhere_generates_one_and_updates_icecast_conf(self):
+        self.existing_install()
+        write(os.path.join(self.app, "icecast.conf"), "HOST=localhost\nPORT=8000\nSOURCE_PASSWORD=\n", 0o600)
+        r, xml = self.run_step(keep=1)
+        self.assertIn("<source-password>GENERATED</source-password>", read(xml))
+        self.assertIn("SOURCE_PASSWORD=GENERATED", read(os.path.join(self.app, "icecast.conf")))
+
+    def test_working_config_is_backed_up_next_to_the_app(self):
+        self.existing_install()
+        r, xml = self.run_step(keep=1, xml=self.XML)
+        self.assertEqual(read(self.backup()), self.XML)
+        self.assertEqual(oct(os.stat(self.backup()).st_mode & 0o777), "0o600")
+
+
 class StationsKeepTests(Base):
     def test_existing_stations_are_not_overwritten_by_examples(self):
         self.existing_install()
