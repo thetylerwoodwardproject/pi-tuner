@@ -520,19 +520,28 @@ usermod -aG plugdev pituner
 chown -R pituner:pituner "${APP_DIR}"
 chmod 600 "${APP_DIR}/icecast.conf"
 
-# Local rotating logs (tuner health / EAS / Zabbix mirror).
-LOG_DIR="/var/log/pituner"
-OLD_LOG_DIR="/var/www/pituner"      # earlier versions kept the logs here
+# Local rotating logs (tuner health / EAS / Zabbix mirror). Runs for every mode,
+# so an upgrade also moves logs from the old location to the new one.
+LOG_DIR="${LOG_DIR:-/var/log/pituner}"
+OLD_LOG_DIR="${OLD_LOG_DIR:-/var/www/pituner}"      # earlier versions kept the logs here
+LOGROTATE_DIR="${LOGROTATE_DIR:-/etc/logrotate.d}"
 mkdir -p "${LOG_DIR}"
-if [ -d "${OLD_LOG_DIR}" ]; then
-  # Carry the existing logs (and rotated copies) over; never overwrite.
-  find "${OLD_LOG_DIR}" -maxdepth 1 -type f -name '*.log*' -exec mv -n {} "${LOG_DIR}/" \; 2>/dev/null || true
-  rmdir "${OLD_LOG_DIR}" 2>/dev/null || true
-  [ -d "${OLD_LOG_DIR}" ] && warn "${OLD_LOG_DIR} still has files; logs now go to ${LOG_DIR}."
+if [ -d "${OLD_LOG_DIR}" ] && [ "${OLD_LOG_DIR}" != "${LOG_DIR}" ]; then
+  info "Moving the logs from ${OLD_LOG_DIR} to ${LOG_DIR}..."
+  for old in "${OLD_LOG_DIR}"/* "${OLD_LOG_DIR}"/.[!.]*; do
+    [ -e "${old}" ] || continue
+    dest="${LOG_DIR}/$(basename "${old}")"
+    [ -e "${dest}" ] && dest="${dest}.from-www"     # never overwrite
+    mv -n "${old}" "${dest}"
+  done
+  rmdir "${OLD_LOG_DIR}" 2>/dev/null \
+    && ok "Removed the old log directory ${OLD_LOG_DIR}." \
+    || warn "${OLD_LOG_DIR} could not be removed; logs now go to ${LOG_DIR}."
 fi
 chown -R pituner:pituner "${LOG_DIR}"
 chmod 755 "${LOG_DIR}"
-[ -f "${SRC}/logrotate.conf" ] && install -m 644 "${SRC}/logrotate.conf" /etc/logrotate.d/pituner
+mkdir -p "${LOGROTATE_DIR}"
+[ -f "${SRC}/logrotate.conf" ] && install -m 644 "${SRC}/logrotate.conf" "${LOGROTATE_DIR}/pituner"
 ok "Log directory ${LOG_DIR} and logrotate config installed."
 
 ok "Application files installed."
@@ -808,6 +817,68 @@ else
   chown pituner:pituner "${APP_DIR}/smtp.conf"
   info "Email alerts skipped. You can enable them later by editing ${APP_DIR}/smtp.conf."
 fi
+fi
+
+# ------------------------------------------------------------- recordings share
+# Optional read-only, no-login SMB share of the recordings folder. The share runs
+# as the pituner user, so nothing under ${APP_DIR} but recordings/ is exposed and
+# no permissions need loosening.
+SMB_CONF="${SMB_CONF:-/etc/samba/smb.conf}"
+SMB_BEGIN="# BEGIN pituner recordings share"
+SMB_END="# END pituner recordings share"
+smb_wanted=0
+smb_allow=""
+if grep -qF "${SMB_BEGIN}" "${SMB_CONF}" 2>/dev/null; then
+  smb_wanted=1
+  smb_allow="$(sed -n "/^${SMB_BEGIN}/,/^${SMB_END}/s/^[[:space:]]*hosts allow = //p" "${SMB_CONF}" | head -n1)"
+  info "The recordings share is already set up; refreshing it."
+elif [ "${INTERACTIVE}" = "1" ] && confirm "Share the recordings folder on your network (SMB, read-only, no login)?"; then
+  smb_wanted=1
+  smb_allow=$(ask "  Limit access to this network, e.g. 192.168.1.0/24 (blank = anyone who can reach the Pi)" "")
+elif [ "${PITUNER_SMB_SHARE:-}" = "1" ]; then      # unattended opt-in
+  smb_wanted=1
+  smb_allow="${PITUNER_SMB_ALLOW:-}"
+fi
+case "${smb_allow}" in
+  *[!0-9a-fA-F:./,\ ]*) warn "'${smb_allow}' is not a valid network list; the share will not be limited."; smb_allow="" ;;
+esac
+if [ "${smb_wanted}" = "1" ] && ! command -v smbd >/dev/null 2>&1; then
+  info "Installing Samba..."
+  DEBIAN_FRONTEND=noninteractive apt-get install -y samba \
+    || { warn "Could not install Samba; the recordings share was not set up."; smb_wanted=0; }
+fi
+if [ "${smb_wanted}" = "1" ]; then
+  mkdir -p "$(dirname "${SMB_CONF}")"
+  [ -f "${SMB_CONF}" ] || printf '[global]\n' > "${SMB_CONF}"
+  smb_tmp="$(mktemp)"
+  sed "/^${SMB_BEGIN}/,/^${SMB_END}/d" "${SMB_CONF}" > "${smb_tmp}"
+  # Samba only treats a no-login connection as a guest when this is set.
+  grep -qi '^[[:space:]]*map to guest' "${smb_tmp}" \
+    || sed -i '0,/^\[global\]/s//[global]\n   map to guest = Bad User/' "${smb_tmp}"
+  {
+    echo "${SMB_BEGIN}"
+    echo "[recordings]"
+    echo "   comment = Pi-Tuner recordings (read only)"
+    echo "   path = ${APP_DIR}/recordings"
+    echo "   read only = yes"
+    echo "   guest ok = yes"
+    echo "   browseable = yes"
+    echo "   force user = pituner"
+    echo "   force group = pituner"
+    [ -n "${smb_allow}" ] && echo "   hosts allow = ${smb_allow}"
+    echo "${SMB_END}"
+  } >> "${smb_tmp}"
+  if testparm -s "${smb_tmp}" >/dev/null 2>&1; then
+    cat "${smb_tmp}" > "${SMB_CONF}"
+    systemctl enable smbd >/dev/null 2>&1 || true
+    systemctl restart smbd 2>&1 || warn "Could not restart smbd; run: sudo systemctl restart smbd"
+    command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -q "Status: active" && ufw allow samba >/dev/null 2>&1
+    ok "Recordings shared read-only, no login: \\\\$(hostname)\\recordings  (smb://$(hostname)/recordings)"
+    [ -n "${smb_allow}" ] && info "Access is limited to ${smb_allow}."
+  else
+    warn "The Samba config did not validate, so ${SMB_CONF} was left unchanged."
+  fi
+  rm -f "${smb_tmp}"
 fi
 
 # ------------------------------------------------------------- service

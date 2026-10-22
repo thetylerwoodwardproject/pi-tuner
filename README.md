@@ -606,11 +606,12 @@ the `demux` and `redsea` decoders in `/usr/local/bin`.
 
 ## Uninstall
 
-Removes the service, application files, `pituner` user and command, and the `demux` and `redsea` decoders (system packages stay):
+Wipes everything Pi-Tuner installed: the service, `/opt/pituner` (with the recordings), the `pituner` user and command, the `demux` and `redsea` decoders, the logs under `/var/log` and `/var/www`, the logrotate rule, the recordings SMB share and any pituner nginx config. It then asks whether to keep Icecast and Nginx:
 
 ```sh
-sudo ./uninstall.sh          # asks before removing each thing
-sudo ./uninstall.sh --yes    # remove everything without prompting
+sudo ./uninstall.sh          # shows the plan, asks once, then asks about Icecast and Nginx
+sudo ./uninstall.sh --yes    # no questions; keeps Icecast and Nginx
+sudo ./uninstall.sh --yes --remove-icecast --remove-nginx   # also purge those two
 ```
 
 ## Made by

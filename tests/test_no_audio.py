@@ -217,3 +217,29 @@ class EnumerateDevicesTests(unittest.TestCase):
         t0 = time.time()
         self.assertEqual(tuner.enumerate_devices(timeout=1), [])
         self.assertLess(time.time() - t0, 6)
+
+
+class ServiceReadinessTests(unittest.TestCase):
+    def test_ready_is_sent_before_the_slow_station_starts(self):
+        d = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, d, ignore_errors=True)
+        t = tuner.Tuner(d)
+        events = []
+
+        def load():
+            t.stations = [tuner.Station(dict(CFG)), tuner.Station(dict(CFG, name="B", mount="/tuner4"))]
+
+        with mock.patch.object(t, "load_config", load), \
+                mock.patch.object(t, "refresh_devices"), \
+                mock.patch.object(t, "start_station", lambda st: events.append(("start", st.name))), \
+                mock.patch.object(t, "poll", lambda: t.shutdown()), \
+                mock.patch.object(t, "stop_station"), \
+                mock.patch.object(t.alerts, "service_started"), \
+                mock.patch.object(t.alerts, "service_stopped"), \
+                mock.patch.object(tuner, "sd_notify", lambda s: events.append(("notify", s))), \
+                mock.patch.object(tuner.time, "sleep"):
+            t.run()
+        kinds = [e for e in events if e[0] == "start" or e == ("notify", "READY=1")]
+        self.assertEqual(kinds[0], ("notify", "READY=1"))       # before any station starts
+        self.assertEqual([e for e in events if e[0] == "start"], [("start", "W300BM"), ("start", "B")])
+        self.assertGreaterEqual(events.count(("notify", "WATCHDOG=1")), 2)   # fed while stations start
