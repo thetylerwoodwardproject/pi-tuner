@@ -196,6 +196,23 @@ class DetectorTests(unittest.TestCase):
         tones = [c.args[1] for c in lf.call_args_list if "attention tone" in c.args[1]]
         self.assertTrue(tones and all(t.endswith("(no SAME header decoded)") for t in tones), tones)
 
+    def test_end_of_message_line_repeats_the_alert_details(self):
+        rate = 25000
+        now = datetime.datetime.now(UTC)
+        stamp = f"{now.timetuple().tm_yday:03d}{now.hour:02d}{now.minute:02d}"
+        header = f"ZCZC-CIV-RWT-022071-022051+0015-{stamp}-WLSU-"
+        pcm = (same_audio.burst_stream(header, rate) + same_audio.afsk("NNNN", rate)
+               + [0] * rate)
+        _, lf = self.run_detector(pcm, rate)
+        eoms = [c.args[1] for c in lf.call_args_list
+                if c.args[0] == "eas.log" and "end of message" in c.args[1]]
+        self.assertEqual(len(eoms), 1, eoms)
+        for text in ("RWT", "Required Weekly Test", "FIPS 22071", "FIPS 22051", header):
+            self.assertIn(text, eoms[0])
+        _, lf = self.run_detector(same_audio.afsk("NNNN", rate) + [0] * rate, rate)
+        eoms = [c.args[1] for c in lf.call_args_list if "end of message" in c.args[1]]
+        self.assertTrue(eoms and all("no SAME header decoded" in m for m in eoms), eoms)
+
     def test_undecodable_header_is_logged_not_dropped(self):
         rate = 25000
         header = "ZCZC-WXR-TOR-022071+0030-9992599-KLOX/NWS-"   # day 999: valid shape, invalid content

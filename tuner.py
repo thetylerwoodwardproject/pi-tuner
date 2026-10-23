@@ -1635,6 +1635,8 @@ SAME_PHASES = 8
 SAME_COLLECT_SECS = 5.0
 SAME_DUP_SECS = 120.0
 SAME_MAX_LEN = 280
+SAME_EOM_DUP_SECS = 10.0
+SAME_EOM_SECS = 900.0  # an EOM within this long of a header is taken to end that alert
 SAME_HEADER_RE = re.compile(
     r"^ZCZC-([A-Z]{3})-([A-Z0-9]{3})((?:-\d{6}){1,31})\+(\d{4})-(\d{3})(\d{2})(\d{2})-([A-Za-z0-9/ ]{1,8})-$")
 _ZCZC = int.from_bytes(b"ZCZC", "little")
@@ -1958,6 +1960,17 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
 
     same = SameDecoder(sample_rate)
     collector = SameCollector()
+    last = {}  # most recent reported header, so the EOM (which carries no data) can echo it
+
+    def eom_message(now):
+        """EOM log text naming the alert it ends, e.g. 'RWT ... for Louisiana, county 071 (FIPS 22071)'."""
+        msg = f"EAS end of message heard on {name}"
+        if not last or now - last["at"] > SAME_EOM_SECS:
+            return msg + " (no SAME header decoded for it)"
+        what = last["summary"] or "undecoded header"
+        out = f"{msg}: {what} [{last['header']}]"
+        last.clear()  # one header, one EOM
+        return out
 
     def eas_items(value):
         """The any-tuner pulse, plus this tuner's own item."""
@@ -1971,11 +1984,13 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
         if info is None:
             # Bit errors can leave a header that matches the format but isn't a
             # valid message; keep the raw text rather than losing the alert.
+            last.update(at=now, header=header, summary="")
             msg = f"SAME header heard on {name} but could not be decoded [{header}]"
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
             on_record(msg, now)
             return
         summary = same_summary(info)
+        last.update(at=now, header=header, summary=summary)
         msg = f"EAS message on {name}: {summary}"
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
         on_record(f"{msg} [{header}]", now)
@@ -1988,6 +2003,7 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
     block = int(sample_rate * EAS_WINDOW_SECS)
     chunk = block * 2 * channels  # bytes per window (2 bytes per sample)
     hits = 0
+    last_eom = -SAME_EOM_DUP_SECS
     pulsing = False
     pulse_start = 0.0
     cooldown_until = 0.0
@@ -2002,8 +2018,12 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
         for kind, text in same.feed(samples):
             if kind == "header":
                 collector.add(text, now)
-            else:
-                on_record(f"EAS end of message heard on {name}", now)
+            elif now - last_eom >= SAME_EOM_DUP_SECS:  # the EOM is sent as three bursts
+                last_eom = now
+                pending = collector.poll(now + SAME_COLLECT_SECS)  # don't let a short alert's EOM beat its header
+                if pending:
+                    report_same(pending, now)
+                on_record(eom_message(now), now)
         header = collector.poll(now)
         if header:
             report_same(header, now)
