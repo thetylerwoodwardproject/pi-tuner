@@ -219,10 +219,17 @@ class MailerTests(unittest.TestCase):
         srv = FakeSMTP(hang=True)
         self.addCleanup(srv.close)
         m = tuner.Mailer(conf(srv.port, timeout="1"))
-        start = time.time()
-        for _ in range(3):
-            m.send("x", "y")
-        self.assertLess(time.time() - start, 0.5)
+        m.ATTEMPT_DELAYS = (0.0, 0.0)
+        # The worker outlives the send calls; let it finish in here, with its log
+        # calls patched, so it can't write into whichever test runs next.
+        with mock.patch.object(tuner, "log_file"), mock.patch.object(tuner, "log"):
+            start = time.time()
+            for _ in range(3):
+                m.send("x", "y")
+            self.assertLess(time.time() - start, 0.5)
+            srv.close()                # remaining attempts are refused immediately
+            m.flush(15)
+        self.assertEqual(m._queue.unfinished_tasks, 0)
 
     def test_password_is_never_logged(self):
         s = socket.socket()

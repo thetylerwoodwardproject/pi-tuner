@@ -1635,6 +1635,8 @@ SAME_PHASES = 8
 SAME_COLLECT_SECS = 5.0
 SAME_DUP_SECS = 120.0
 SAME_MAX_LEN = 280
+SAME_EOM_DUP_SECS = 10.0
+SAME_EOM_SECS = 900.0  # an EOM within this long of a header is taken to end that alert
 SAME_HEADER_RE = re.compile(
     r"^ZCZC-([A-Z]{3})-([A-Z0-9]{3})((?:-\d{6}){1,31})\+(\d{4})-(\d{3})(\d{2})(\d{2})-([A-Za-z0-9/ ]{1,8})-$")
 _ZCZC = int.from_bytes(b"ZCZC", "little")
@@ -1755,6 +1757,19 @@ def same_summary(info):
     """One line, e.g. 'Tornado Warning (TOR) for Louisiana, county 071 (FIPS 22071), from KLOX/NWS'."""
     where = "; ".join(info["location_names"])
     return f"{info['event_name']} ({info['event']}) for {where}, from {info['sender'] or 'unknown'}"
+
+
+def same_detail(info, started):
+    """One line of everything in a decoded header, with local start/expiry times."""
+    def local(dt):
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    mins = info["purge_minutes"]
+    return (f"{info['event_name']} ({info['event']}) from {info['originator_name']} "
+            f"({info['originator']}), sender {info['sender'] or 'unknown'}; "
+            f"areas: {'; '.join(info['location_names'])}; "
+            f"started {time.strftime('%Y-%m-%d %H:%M:%S %Z', time.localtime(started))}, "
+            f"issued {local(info['issued'])}, expires {local(info['expires'])} "
+            f"(valid {mins // 60}h {mins % 60:02d}m)")
 
 
 def same_email_body(info, name, when):
@@ -1958,6 +1973,19 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
 
     same = SameDecoder(sample_rate)
     collector = SameCollector()
+    last = {}  # most recent reported header, so the EOM (which carries no data) can echo it
+
+    def eom_message(now):
+        """The one 'EAS heard' log line, written when the message ends."""
+        msg = f"EAS heard on {name}"
+        if not last or now - last["at"] > SAME_EOM_SECS:
+            return msg + " (no SAME header decoded)"
+        if last["info"] is None:
+            out = f"{msg}: SAME header could not be decoded [{last['header']}]"
+        else:
+            out = f"{msg}: {same_detail(last['info'], last['started'])} [{last['header']}]"
+        last.clear()  # one header, one EOM
+        return out
 
     def eas_items(value):
         """The any-tuner pulse, plus this tuner's own item."""
@@ -1971,11 +1999,13 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
         if info is None:
             # Bit errors can leave a header that matches the format but isn't a
             # valid message; keep the raw text rather than losing the alert.
+            last.update(at=now, started=collector.first, header=header, info=None)
             msg = f"SAME header heard on {name} but could not be decoded [{header}]"
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
             on_record(msg, now)
             return
         summary = same_summary(info)
+        last.update(at=now, started=collector.first, header=header, info=info)
         msg = f"EAS message on {name}: {summary}"
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
         on_record(f"{msg} [{header}]", now)
@@ -1988,6 +2018,7 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
     block = int(sample_rate * EAS_WINDOW_SECS)
     chunk = block * 2 * channels  # bytes per window (2 bytes per sample)
     hits = 0
+    last_eom = -SAME_EOM_DUP_SECS
     pulsing = False
     pulse_start = 0.0
     cooldown_until = 0.0
@@ -2002,8 +2033,12 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
         for kind, text in same.feed(samples):
             if kind == "header":
                 collector.add(text, now)
-            else:
-                on_record(f"EAS end of message heard on {name}", now)
+            elif now - last_eom >= SAME_EOM_DUP_SECS:  # the EOM is sent as three bursts
+                last_eom = now
+                pending = collector.poll(now + SAME_COLLECT_SECS)  # don't let a short alert's EOM beat its header
+                if pending:
+                    report_same(pending, now)
+                on_record(eom_message(now), now)
         header = collector.poll(now)
         if header:
             report_same(header, now)
