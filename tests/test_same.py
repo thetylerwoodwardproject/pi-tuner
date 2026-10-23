@@ -205,14 +205,14 @@ class DetectorTests(unittest.TestCase):
                + [0] * rate)
         _, lf = self.run_detector(pcm, rate)
         eoms = [c.args[1] for c in lf.call_args_list
-                if c.args[0] == "eas.log" and "end of message" in c.args[1]]
+                if c.args[0] == "eas.log" and c.args[1].startswith("EAS heard on")]
         self.assertEqual(len(eoms), 1, eoms)
         for text in ("RWT", "Required Weekly Test", "FIPS 22071", "FIPS 22051", header,
-                     "alert started 20", "(issued 20"):
+                     "started 20", "issued 20", "expires 20", "valid 0h 15m"):
             self.assertIn(text, eoms[0])
         _, lf = self.run_detector(same_audio.afsk("NNNN", rate) + [0] * rate, rate)
-        eoms = [c.args[1] for c in lf.call_args_list if "end of message" in c.args[1]]
-        self.assertTrue(eoms and all("no SAME header decoded" in m for m in eoms), eoms)
+        eoms = [c.args[1] for c in lf.call_args_list if c.args[1].startswith("EAS heard on")]
+        self.assertTrue(eoms and all("EAS heard on WLSU (no SAME header decoded)" in m for m in eoms), eoms)
 
     def test_undecodable_header_is_logged_not_dropped(self):
         rate = 25000

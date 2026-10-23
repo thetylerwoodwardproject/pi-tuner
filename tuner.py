@@ -1759,6 +1759,19 @@ def same_summary(info):
     return f"{info['event_name']} ({info['event']}) for {where}, from {info['sender'] or 'unknown'}"
 
 
+def same_detail(info, started):
+    """One line of everything in a decoded header, with local start/expiry times."""
+    def local(dt):
+        return dt.astimezone().strftime("%Y-%m-%d %H:%M:%S %Z")
+    mins = info["purge_minutes"]
+    return (f"{info['event_name']} ({info['event']}) from {info['originator_name']} "
+            f"({info['originator']}), sender {info['sender'] or 'unknown'}; "
+            f"areas: {'; '.join(info['location_names'])}; "
+            f"started {time.strftime('%Y-%m-%d %H:%M:%S %Z', time.localtime(started))}, "
+            f"issued {local(info['issued'])}, expires {local(info['expires'])} "
+            f"(valid {mins // 60}h {mins % 60:02d}m)")
+
+
 def same_email_body(info, name, when):
     def utc(dt):
         return dt.strftime("%Y-%m-%d %H:%M UTC")
@@ -1963,13 +1976,14 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
     last = {}  # most recent reported header, so the EOM (which carries no data) can echo it
 
     def eom_message(now):
-        """EOM log text naming the alert it ends, e.g. 'RWT ... for Louisiana, county 071 (FIPS 22071)'."""
-        msg = f"EAS end of message heard on {name}"
+        """The one 'EAS heard' log line, written when the message ends."""
+        msg = f"EAS heard on {name}"
         if not last or now - last["at"] > SAME_EOM_SECS:
-            return msg + " (no SAME header decoded for it)"
-        what = last["summary"] or "undecoded header"
-        began = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last["started"]))
-        out = f"{msg}: {what}; alert started {began}{last['issued']} [{last['header']}]"
+            return msg + " (no SAME header decoded)"
+        if last["info"] is None:
+            out = f"{msg}: SAME header could not be decoded [{last['header']}]"
+        else:
+            out = f"{msg}: {same_detail(last['info'], last['started'])} [{last['header']}]"
         last.clear()  # one header, one EOM
         return out
 
@@ -1985,14 +1999,13 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
         if info is None:
             # Bit errors can leave a header that matches the format but isn't a
             # valid message; keep the raw text rather than losing the alert.
-            last.update(at=now, started=collector.first, header=header, summary="", issued="")
+            last.update(at=now, started=collector.first, header=header, info=None)
             msg = f"SAME header heard on {name} but could not be decoded [{header}]"
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
             on_record(msg, now)
             return
         summary = same_summary(info)
-        last.update(at=now, started=collector.first, header=header, summary=summary,
-                    issued=f" (issued {info['issued'].strftime('%Y-%m-%d %H:%M UTC')})")
+        last.update(at=now, started=collector.first, header=header, info=info)
         msg = f"EAS message on {name}: {summary}"
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
         on_record(f"{msg} [{header}]", now)
