@@ -142,11 +142,11 @@ class UpgradeConfigTests(unittest.TestCase):
         before = {n: tuner.parse_keyvalue(os.path.join(self.d, n))
                   for n in ("icecast.conf", "zabbix.conf")}
         added = tuner.upgrade_config(self.d)
-        self.assertEqual(added["zabbix.conf"], ["KEY_EAS", "EAS_DETECT", "LEVEL_MONITOR"])
+        self.assertEqual(added["zabbix.conf"], ["KEY_EAS", "EAS_DETECT", "LEVEL_MONITOR", "RSSI_MONITOR"])
         self.assertEqual(added["icecast.conf"], ["ADMIN_USER", "ADMIN_PASSWORD"])
         self.assertEqual(added["smtp.conf"], ["(new file)"])
-        self.assertEqual(added["stations/station1.conf"], ["RBDS", "RECORD", "RECORD_KEEP_DAYS"])
-        self.assertEqual(added["stations/station2.conf"], ["RECORD", "RECORD_KEEP_DAYS"])  # wx: no RBDS
+        self.assertEqual(added["stations/station1.conf"], ["RBDS", "RSSI_MONITOR", "RECORD", "RECORD_KEEP_DAYS"])
+        self.assertEqual(added["stations/station2.conf"], ["RSSI_MONITOR", "RECORD", "RECORD_KEEP_DAYS"])  # wx: no RBDS
         for name, old in before.items():
             now = tuner.parse_keyvalue(os.path.join(self.d, name))
             for key, value in old.items():
@@ -165,6 +165,15 @@ class UpgradeConfigTests(unittest.TestCase):
         m = tuner.Mailer(tuner.parse_keyvalue(os.path.join(self.d, "smtp.conf")))
         self.assertFalse(m.enabled)
         self.assertEqual((m.port, m.security, m.down_delay), (587, "starttls", 120))
+
+    def test_new_rssi_conf_has_the_documented_defaults(self):
+        self.assertEqual(tuner.missing_config_keys(self.d)["rssi.conf"], ["(new file)"])
+        added = tuner.upgrade_config(self.d)
+        self.assertEqual(added["rssi.conf"], ["(new file)"])
+        path = os.path.join(self.d, "rssi.conf")
+        self.assertEqual(tuner.rssi_settings(tuner.parse_keyvalue(path)), tuner.rssi_settings({}))
+        self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
+        self.assertNotIn("rssi.conf", tuner.upgrade_config(self.d))      # idempotent
 
     def test_idempotent_and_dry_run(self):
         self.assertIn("zabbix.conf", tuner.missing_config_keys(self.d))
@@ -210,7 +219,7 @@ class BackupTests(unittest.TestCase):
 
 class ShippedFilesTests(unittest.TestCase):
     def test_new_installs_cover_every_key_in_the_table(self):
-        for name in ("zabbix.conf", "smtp.conf", "icecast.conf"):
+        for name in ("zabbix.conf", "smtp.conf", "icecast.conf", "rssi.conf"):
             path = os.path.join(REPO, name)
             lines = tuner._read_lines(path)
             for spec in tuner.CONFIG_KEYS[name]:

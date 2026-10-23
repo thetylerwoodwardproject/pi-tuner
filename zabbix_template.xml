@@ -307,6 +307,38 @@
                             <units>dBFS</units>
                             <description>Audio level in dBFS (RMS), averaged over 10 seconds</description>
                         </item_prototype>
+                        <item_prototype>
+                            <uuid>ac12899446ea4b95a1dd5fc84589be92</uuid>
+                            <name>{#NAME}: reception (RSSI)</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.rssi[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>31d</history>
+                            <trends>365d</trends>
+                            <value_type>FLOAT</value_type>
+                            <units>dB</units>
+                            <description>Reception level in dB (relative signal-to-noise estimate), averaged over 1 minute</description>
+                        </item_prototype>
+                        <item_prototype>
+                            <uuid>bfc0eacc395949cba99c1e606ebf87aa</uuid>
+                            <name>{#NAME}: low signal alarm</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.rssi.alarm[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>31d</history>
+                            <trends>365d</trends>
+                            <value_type>UNSIGNED</value_type>
+                            <description>1 while the Low Signal alarm is raised (RSSI below Threshold On for Time On)</description>
+                            <trigger_prototypes>
+                            <trigger_prototype>
+                                <uuid>22786e851c5a40b3bb83073210ac3a93</uuid>
+                                <expression>last(/Pi-Tuner/pituner.tuner.rssi.alarm[{#TUNER}])=1</expression>
+                                <name>Weak reception on {#NAME}</name>
+                                <priority>WARNING</priority>
+                                <description>The Low Signal alarm is raised: reception stayed below Threshold On for Time On (set in rssi.conf). Auto-recovers when the alarm clears.</description>
+                            </trigger_prototype>
+                            </trigger_prototypes>
+                        </item_prototype>
                     </item_prototypes>
                     <trigger_prototypes>
                         <trigger_prototype>

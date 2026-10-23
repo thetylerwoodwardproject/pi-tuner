@@ -718,6 +718,7 @@ KEY_EAS=pituner.eas
 INTERVAL=60
 EAS_DETECT=true
 LEVEL_MONITOR=true
+RSSI_MONITOR=true
 # ─── end user settings ─────────────────────────────
 EOF
   chown pituner:pituner "${APP_DIR}/zabbix.conf"
@@ -740,6 +741,7 @@ KEY_EAS=pituner.eas
 INTERVAL=60
 EAS_DETECT=true
 LEVEL_MONITOR=true
+RSSI_MONITOR=true
 # ─── end user settings ─────────────────────────────
 EOF
   chown pituner:pituner "${APP_DIR}/zabbix.conf"
@@ -793,6 +795,7 @@ ALERT_STATION=true
 ALERT_EAS=true
 ALERT_DISK=true
 ALERT_SERVICE=true
+ALERT_SIGNAL=true
 DOWN_DELAY=${smtp_delay}
 DISK_MIN_GB=2
 # ─── end user settings ─────────────────────────────
@@ -817,6 +820,12 @@ else
   chown pituner:pituner "${APP_DIR}/smtp.conf"
   info "Email alerts skipped. You can enable them later by editing ${APP_DIR}/smtp.conf."
 fi
+fi
+
+# Low Signal alarm defaults (kept if already there; new installs get the shipped file).
+if [ ! -f "${APP_DIR}/rssi.conf" ]; then
+  install -m 600 "${SRC}/rssi.conf" "${APP_DIR}/rssi.conf"
+  chown pituner:pituner "${APP_DIR}/rssi.conf"
 fi
 
 # ------------------------------------------------------------- recordings web listing

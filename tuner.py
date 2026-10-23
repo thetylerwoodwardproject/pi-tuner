@@ -49,6 +49,7 @@ import argparse
 import array
 import base64
 import cmath
+import collections
 import datetime
 import email.message
 import email.utils
@@ -296,6 +297,7 @@ CONFIG_KEYS = {
         ("INTERVAL", "60", True, "status snapshot / heartbeat interval, seconds", None),
         ("EAS_DETECT", "false", True, "true to detect the EAS attention tone", None),
         ("LEVEL_MONITOR", "true", True, "send each tuner's audio level (dBFS) to Zabbix", None),
+        ("RSSI_MONITOR", "true", True, "send each tuner's reception level (RSSI, dB) to Zabbix", None),
     ],
     "smtp.conf": [
         ("ENABLED", "false", True, "true to send email alerts", None),
@@ -313,11 +315,22 @@ CONFIG_KEYS = {
         ("ALERT_EAS", "true", True, "EAS attention tone emails", None),
         ("ALERT_DISK", "true", True, "low recording disk space emails", None),
         ("ALERT_SERVICE", "true", True, "service started / stopped emails", None),
+        ("ALERT_SIGNAL", "true", True, "low signal alarm raised / cleared emails", None),
         ("DOWN_DELAY", "120", True, "seconds a station must stay down before the email", None),
         ("DISK_MIN_GB", "2", True, "free space that triggers the disk email", None),
     ],
+    "rssi.conf": [
+        ("ALARM", "true", True, "Low Signal alarm on/off", None),
+        ("MUTE", "false", True, "mute the Icecast stream while the alarm is raised", None),
+        ("THRESHOLD_ON", "12", True, "dB: alarm raises when RSSI stays below this", None),
+        ("THRESHOLD_OFF", "18", True, "dB: alarm clears when RSSI stays above this", None),
+        ("TIME_ON", "60", True, "seconds below Threshold On before the alarm raises", None),
+        ("TIME_OFF", "5", True, "seconds above Threshold Off before the alarm clears", None),
+        ("OFFSET", "0", True, "dB added to the reading, to line it up with another meter", None),
+    ],
     "station": [
         ("RBDS", "false", False, "fm only: RBDS text and PTY genre to Icecast", "fm"),
+        ("RSSI_MONITOR", "true", False, "measure reception every minute (rssi.log, pituner signal)", None),
         ("RECORD", "false", False, "save 15-minute MP3 recordings", None),
         ("RECORD_KEEP_DAYS", "", False, "delete recordings older than this many days", None),
     ],
@@ -326,6 +339,10 @@ CONFIG_KEYS = {
 CONFIG_HEADERS = {
     "smtp.conf": "# Pi-Tuner SMTP email alerts. Keep this file mode 600: it holds the password.",
     "zabbix.conf": "# Pi-Tuner Zabbix trapper settings",
+    "rssi.conf": ("# Pi-Tuner Low Signal alarm (RSSI). These are the defaults for every station;\n"
+                  "# a station file can override any of them with RSSI_ALARM, RSSI_MUTE,\n"
+                  "# RSSI_THRESHOLD_ON, RSSI_THRESHOLD_OFF, RSSI_TIME_ON, RSSI_TIME_OFF, RSSI_OFFSET.\n"
+                  "# Changes apply within a minute, no restart needed."),
     "icecast.conf": "# Pi-Tuner Icecast connection (shared by all stations)",
 }
 
@@ -356,10 +373,14 @@ def _missing_specs(path, specs, band=None):
             if (sp[4] is None or sp[4] == band) and not _has_key(lines, sp[0])]
 
 
+# config files newer versions create when missing (upgrade-config)
+NEW_FILES = ("smtp.conf", "rssi.conf")
+
+
 def _config_targets(base_dir):
     """(display name, path, spec key, band) for each existing config file."""
     targets = []
-    for name in ("icecast.conf", "zabbix.conf", "smtp.conf"):
+    for name in ("icecast.conf", "zabbix.conf", "smtp.conf", "rssi.conf"):
         path = os.path.join(base_dir, name)
         if os.path.isfile(path):
             targets.append((name, path, name, None))
@@ -380,8 +401,9 @@ def missing_config_keys(base_dir):
         missing = [sp[0] for sp in _missing_specs(path, CONFIG_KEYS[spec], band)]
         if missing:
             out[display] = missing
-    if not os.path.isfile(os.path.join(base_dir, "smtp.conf")):
-        out["smtp.conf"] = ["(new file)"]
+    for name in NEW_FILES:
+        if not os.path.isfile(os.path.join(base_dir, name)):
+            out[name] = ["(new file)"]
     return out
 
 
@@ -393,17 +415,18 @@ def upgrade_config(base_dir):
     Returns {file: [keys added]}.
     """
     added = {}
-    smtp = os.path.join(base_dir, "smtp.conf")
-    if not os.path.isfile(smtp) and os.path.isdir(base_dir):
-        _atomic_write(smtp, render_config("smtp.conf"), mode=0o600)
-        try:
-            st = os.stat(base_dir)
-            os.chown(smtp, st.st_uid, st.st_gid)
-        except OSError:
-            pass
-        added["smtp.conf"] = ["(new file)"]
+    for name in NEW_FILES:
+        path = os.path.join(base_dir, name)
+        if not os.path.isfile(path) and os.path.isdir(base_dir):
+            _atomic_write(path, render_config(name), mode=0o600)
+            try:
+                st = os.stat(base_dir)
+                os.chown(path, st.st_uid, st.st_gid)
+            except OSError:
+                pass
+            added[name] = ["(new file)"]
     for display, path, spec, band in _config_targets(base_dir):
-        if display == "smtp.conf" and "smtp.conf" in added:
+        if display in added:
             continue
         specs = _missing_specs(path, CONFIG_KEYS[spec], band)
         if not specs:
@@ -483,6 +506,22 @@ def _level_tee(name, sample_rate, channels, base_dir, tid):
     """Return the pipeline fragment that taps audio to the level meter."""
     return (f"tee --output-error=warn >(python3 {TUNER_PATH} level "
             f'--dir "{base_dir}" --tuner {tid} "{name}" {sample_rate} {channels})')
+
+
+def _rssi_tee(name, band, freq, sample_rate, base_dir, tid, station_conf=""):
+    """Return the pipeline fragment that taps mono demodulated signal to the
+    reception (RSSI) meter: the 192 kHz MPX for FM, the 25 kHz audio for WX.
+    ``station_conf`` (the station file name) lets it read per-station overrides."""
+    conf_arg = f' --station-conf "{station_conf}"' if station_conf else ""
+    return (f"tee --output-error=warn >(python3 {TUNER_PATH} rssi "
+            f'--dir "{base_dir}" --tuner {tid} --band {band} --freq {freq:g}{conf_arg} '
+            f'"{name}" {sample_rate})')
+
+
+def _mute_gate(sample_rate, channels, tid):
+    """Return the in-line pipeline fragment that silences the stream while the
+    Low Signal alarm's mute is on. Placed after every tap, just before ffmpeg."""
+    return f"python3 {TUNER_PATH} mute-gate --tuner {tid} {sample_rate} {channels}"
 
 
 def _record_tee(name, sample_rate, channels, base_dir):
@@ -676,6 +715,7 @@ def load_stations(stations_dir):
             "gain": raw.get("gain", "").strip(),
             "mount": mount,
             "rbds": _parse_bool(raw.get("rbds")) and band == "fm",
+            "rssi": _parse_bool(raw.get("rssi_monitor", "true")),
             "record": _parse_bool(raw.get("record")),
             "record_keep_days": _parse_days(raw.get("record_keep_days")),
             "conf": filename,
@@ -699,16 +739,18 @@ def _genre_for(cfg, genre=""):
 
 
 def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
-                  rbds=False, genre="", record=True, level=False):
+                  rbds=False, genre="", record=True, level=False, rssi=False):
     """Assemble the shell pipeline for one station.
 
     ``genre`` is the Icecast genre for FM (the RBDS PTY found at startup);
     FM falls back to "Radio" when there is none. WX is always "Weather".
     The recorder tap is added when ``record`` and the station's RECORD are set;
-    the level-meter tap when ``level`` (Zabbix audio level) is.
+    the level-meter tap when ``level`` (Zabbix audio level) is. The reception
+    (RSSI) tap is added when ``rssi`` and the station's RSSI_MONITOR are set.
     """
     tid = tuner_id(cfg["mount"])
     record = record and bool(cfg.get("record"))
+    rssi = rssi and cfg.get("rssi", True)
     freq_hz = int(cfg["freq"] * 1_000_000)
     name = _safe_name(cfg["name"])
     genre = _genre_for(cfg, genre)
@@ -721,18 +763,24 @@ def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
 
     if cfg["band"] == "wx":
         cmd = f"rtl_fm -d {device_index} -f {freq_hz} -s 25000 -E deemp -F 9"
+        if rssi:
+            cmd += f" | {_rssi_tee(name, 'wx', cfg['freq'], 25000, eas_dir, tid, cfg.get('conf', ''))}"
         if record:
             cmd += f" | {_record_tee(name, 25000, 1, eas_dir)}"
         if level:
             cmd += f" | {_level_tee(name, 25000, 1, eas_dir, tid)}"
         if eas:
             cmd += f" | {_eas_tee(name, 25000, 1, eas_dir, tid)}"
+        if rssi:
+            cmd += f" | {_mute_gate(25000, 1, tid)}"
         return cmd + f" | ffmpeg -f s16le -ar 25000 -ac 1 -i pipe:0 {ffmpeg}"
 
     cmd = _fm_source(cfg, device_index)
     if rbds and cfg.get("rbds"):
         log_name = name if record else None
         cmd += f" | {_rbds_tee(cfg['mount'], eas_dir, log_name)}"
+    if rssi:
+        cmd += f" | {_rssi_tee(name, 'fm', cfg['freq'], 192000, eas_dir, tid, cfg.get('conf', ''))}"
     cmd += " | demux -r 192000 -R 48000 -d 75"
     if record:
         cmd += f" | {_record_tee(name, 48000, 2, eas_dir)}"
@@ -740,6 +788,8 @@ def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
         cmd += f" | {_level_tee(name, 48000, 2, eas_dir, tid)}"
     if eas:
         cmd += f" | {_eas_tee(name, 48000, 2, eas_dir, tid)}"
+    if rssi:
+        cmd += f" | {_mute_gate(48000, 2, tid)}"
     return cmd + f" | ffmpeg -f s16le -ar 48000 -ac 2 -i pipe:0 {ffmpeg}"
 
 
@@ -779,8 +829,13 @@ TUNER_METRICS = {
     "rbds.ps": ("char", "Current RBDS station name (PS), or the callsign for a scrolling PS"),
     "eas": ("uint", "1 for about 10 seconds when the EAS attention tone is heard"),
     "level": ("float", "Audio level in dBFS (RMS), averaged over 10 seconds"),
+    "rssi": ("float", "Reception level in dB (relative signal-to-noise estimate), averaged over 1 minute"),
+    "rssi.alarm": ("uint", "1 while the Low Signal alarm is raised (RSSI below Threshold On for Time On)"),
 }
 LEVEL_INTERVAL_SECS = 10
+RSSI_INTERVAL_SECS = 60
+RSSI_GOOD_DB = 25.0
+RSSI_FAIR_DB = 12.0
 
 
 def newest_recording_age(base_dir, name, now):
@@ -832,6 +887,7 @@ class ZabbixSender:
             self.interval = 60
         self.interval = max(10, self.interval)
         self.level_monitor = _conf_flag(conf, "level_monitor", True)
+        self.rssi_monitor = _conf_flag(conf, "rssi_monitor", True)
         self._lock = threading.Lock()
         self._queue = queue.Queue(maxsize=200)
         self._worker = None
@@ -997,6 +1053,7 @@ class Mailer:
         self.alert_eas = _conf_flag(conf, "alert_eas", True)
         self.alert_disk = _conf_flag(conf, "alert_disk", True)
         self.alert_service = _conf_flag(conf, "alert_service", True)
+        self.alert_signal = _conf_flag(conf, "alert_signal", True)
         self.down_delay = max(0, _conf_number(conf, "down_delay", 120))
         self.disk_min_gb = max(0.0, _conf_number(conf, "disk_min_gb", 2.0, float))
         self._queue = queue.Queue(maxsize=50)
@@ -1228,6 +1285,292 @@ def run_level_meter(base_dir, tid, name, sample_rate, channels, stream=None,
             zbx.send_async([(key, dbfs_from_sumsq(sumsq, count))])
             sumsq = count = seen = 0
     zbx.flush(5.0)
+
+
+
+# ------------------------------------------------------ reception level (RSSI)
+# rtl_fm gives no RF signal strength, so reception is estimated from the
+# demodulated signal. FM: the 19 kHz stereo pilot against the noise in empty
+# MPX bins (a weak signal raises the noise floor and buries the pilot). WX has
+# no pilot, so voice-band energy is compared with high-band hiss. The figure is
+# a relative dB value: good for trending and alerting, not calibrated dBm.
+# A mono-only FM station has no pilot and reads low whatever its signal.
+
+RSSI_BANDS = {
+    # band: (sample rate, signal bins in Hz, noise bins in Hz)
+    "fm": (192000, (19000.0,), (70000.0, 75000.0, 80000.0, 85000.0)),
+    "wx": (25000, (500.0, 1000.0, 1500.0, 2000.0, 2500.0), (8000.0, 9000.0, 10000.0, 11000.0)),
+}
+RSSI_BLOCK_SECS = 0.05
+RSSI_MAX_DB = 60.0
+
+
+def rssi_rating(rssi):
+    if rssi >= RSSI_GOOD_DB:
+        return "good"
+    return "fair" if rssi >= RSSI_FAIR_DB else "poor"
+
+
+def rssi_state_path(tid):
+    return os.path.join(LOG_DIR, f"rssi-{tid}.json")
+
+
+def rssi_block_powers(samples, band, sample_rate=None):
+    """(signal power, noise power) of one block, mean over the band's bins."""
+    rate, sig, noise = RSSI_BANDS[band]
+    rate = sample_rate or rate
+    n = len(samples)
+    sp = sum(_goertzel(samples, f, rate) for f in sig) / len(sig) / n
+    npow = sum(_goertzel(samples, f, rate) for f in noise) / len(noise) / n
+    return sp, npow
+
+
+def rssi_from_powers(sig, noise):
+    """Signal-to-noise ratio in dB from summed powers, clamped to 0..RSSI_MAX_DB."""
+    if sig <= 0:
+        return 0.0
+    if noise <= 0:
+        return RSSI_MAX_DB
+    return round(min(RSSI_MAX_DB, max(0.0, 10 * math.log10(sig / noise))), 1)
+
+
+RSSI_ALARM_SMOOTH_SECS = 5
+RSSI_SETTINGS_RELOAD_SECS = 60
+RSSI_MUTE_STALE_SECS = 5.0
+RSSI_DEFAULTS = {"alarm": True, "mute": False, "threshold_on": 12.0,
+                 "threshold_off": 18.0, "time_on": 60, "time_off": 5, "offset": 0.0}
+
+
+def rssi_settings(glob, station=None):
+    """Effective Low Signal alarm settings: ``rssi.conf`` values, overridden by
+    a station file's RSSI_* keys. Invalid values fall back to the defaults, and
+    Threshold Off is never allowed below Threshold On."""
+    station = station or {}
+    merged = {}
+    for key in RSSI_DEFAULTS:
+        value = station.get("rssi_" + key)
+        if value is None or str(value).strip() == "":
+            value = glob.get(key)
+        if value is not None:
+            merged[key] = value
+    d = RSSI_DEFAULTS
+    out = {
+        "alarm": _conf_flag(merged, "alarm", d["alarm"]),
+        "mute": _conf_flag(merged, "mute", d["mute"]),
+        "threshold_on": _conf_number(merged, "threshold_on", d["threshold_on"], float),
+        "threshold_off": _conf_number(merged, "threshold_off", d["threshold_off"], float),
+        "time_on": max(0, _conf_number(merged, "time_on", d["time_on"])),
+        "time_off": max(0, _conf_number(merged, "time_off", d["time_off"])),
+        "offset": _conf_number(merged, "offset", d["offset"], float),
+    }
+    out["threshold_off"] = max(out["threshold_on"], out["threshold_off"])
+    return out
+
+
+def load_rssi_settings(base_dir, station_conf=""):
+    """Read rssi.conf and the station file (if named) and merge them."""
+    station = {}
+    if station_conf:
+        station = parse_keyvalue(os.path.join(base_dir, "stations", os.path.basename(station_conf)))
+    return rssi_settings(parse_keyvalue(os.path.join(base_dir, "rssi.conf")), station)
+
+
+class RssiAlarm:
+    """Low Signal alarm with hysteresis, like an Inovonics 541.
+
+    Raises once the level has stayed below Threshold On for Time On seconds;
+    clears once it has stayed above Threshold Off for Time Off seconds. A level
+    between the two thresholds holds the current state.
+    """
+
+    def __init__(self):
+        self.active = False
+        self._since = None
+
+    def feed(self, value, now, settings, step=1):
+        """Feed one reading covering the ``step`` seconds up to ``now``; returns
+        "raised", "cleared" or None."""
+        if not settings["alarm"]:
+            was, self.active, self._since = self.active, False, None
+            return "cleared" if was else None
+        if not self.active:
+            if value < settings["threshold_on"]:
+                if self._since is None:
+                    self._since = now - step
+                if now - self._since >= settings["time_on"]:
+                    self.active, self._since = True, None
+                    return "raised"
+            else:
+                self._since = None
+        else:
+            if value > settings["threshold_off"]:
+                if self._since is None:
+                    self._since = now - step
+                if now - self._since >= settings["time_off"]:
+                    self.active, self._since = False, None
+                    return "cleared"
+            else:
+                self._since = None
+        return None
+
+
+def mute_flag_path(tid):
+    return os.path.join(LOG_DIR, f"mute-{tid}")
+
+
+def _set_mute_flag(tid, muted):
+    """Refresh (muted) or remove the flag file the mute gate watches."""
+    path = mute_flag_path(tid)
+    try:
+        if muted:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            with open(path, "w"):
+                pass
+            os.utime(path, None)
+        elif os.path.exists(path):
+            os.unlink(path)
+    except OSError:
+        pass
+
+
+def run_mute_gate(tid, sample_rate, channels, src=None, dst=None, flag=None, now=time.time):
+    """Pass PCM from stdin to stdout, replacing it with silence while the mute
+    flag file is fresh. The RSSI meter refreshes the flag every second while the
+    alarm is muting; a stale flag (meter died) counts as not muted, so a failure
+    can never leave a station silent."""
+    src = src if src is not None else sys.stdin.buffer
+    dst = dst if dst is not None else sys.stdout.buffer
+    flag = flag or mute_flag_path(tid)
+    chunk = max(2, int(sample_rate * channels * 2 * 0.1))
+    read = getattr(src, "read1", src.read)
+    while True:
+        data = read(chunk)
+        if not data:
+            break
+        try:
+            muted = now() - os.stat(flag).st_mtime < RSSI_MUTE_STALE_SECS
+        except OSError:
+            muted = False
+        try:
+            dst.write(bytes(len(data)) if muted else data)
+            dst.flush()
+        except (BrokenPipeError, ValueError):
+            break
+
+
+def run_rssi_meter(base_dir, tid, name, band, freq, sample_rate, stream=None,
+                   interval=None, zbx=None, station_conf="", mailer=None):
+    """Read mono s16le PCM from stdin; once per ``interval`` seconds of signal,
+    log the reception level to rssi.log, update the state file ``pituner
+    signal`` reads, and send it to Zabbix. Also runs the Low Signal alarm.
+
+    Each second of signal contributes one short block (RSSI_BLOCK_SECS), which
+    keeps the pure-Python CPU cost small. The alarm watches a short rolling mean
+    of those one-second values; the logged value is the average over the whole
+    interval. Time is counted in seconds of signal read. Settings in rssi.conf
+    and the station file are re-read every minute. Exits cleanly on stdin EOF.
+    """
+    stream = stream if stream is not None else sys.stdin.buffer
+    interval = interval or RSSI_INTERVAL_SECS
+    zbx = zbx or ZabbixSender(parse_keyvalue(os.path.join(base_dir, "zabbix.conf")))
+    if mailer is None:
+        mailer = Mailer(parse_keyvalue(os.path.join(base_dir, "smtp.conf")))
+    key = zbx.tuner_key("rssi", tid)
+    alarm_key = zbx.tuner_key("rssi.alarm", tid)
+    settings = load_rssi_settings(base_dir, station_conf)
+    alarm = RssiAlarm()
+    recent = collections.deque(maxlen=RSSI_ALARM_SMOOTH_SECS)
+    second = int(sample_rate) * 2
+    block = int(sample_rate * RSSI_BLOCK_SECS)
+    sig = noise = 0.0
+    seconds = elapsed = 0
+    last = None
+    _set_mute_flag(tid, False)
+
+    def write_state(value):
+        try:
+            os.makedirs(LOG_DIR, exist_ok=True)
+            _atomic_write(rssi_state_path(tid), json.dumps({
+                "tuner": tid, "name": name, "band": band, "freq": freq,
+                "rssi": value, "rating": rssi_rating(value),
+                "alarm": alarm.active, "muted": alarm.active and settings["mute"],
+                "alarm_enabled": settings["alarm"],
+                "threshold_on": settings["threshold_on"], "threshold_off": settings["threshold_off"],
+                "time_on": settings["time_on"], "time_off": settings["time_off"],
+                "offset": settings["offset"], "updated": time.time()}), mode=0o644)
+        except OSError:
+            pass
+
+    def announce(event, value):
+        if event == "raised":
+            text = (f"LOW SIGNAL alarm RAISED: RSSI {value:.1f} dB stayed below "
+                    f"{settings['threshold_on']:g} dB for {settings['time_on']}s"
+                    f"{' (stream muted)' if settings['mute'] else ''}")
+        else:
+            text = f"LOW SIGNAL alarm CLEARED: RSSI {value:.1f} dB"
+        log_file("rssi.log", f'{tid} "{name}" {band} {freq:g} MHz {text}')
+        if zbx.rssi_monitor:
+            zbx.send_async([(alarm_key, 1 if alarm.active else 0),
+                            (zbx.key_event, f"{name}: {text}")])
+        if mailer.alert_signal:
+            mailer.send(f"Low signal on {name}: {event}",
+                        f"{text}\n\nStation: {name} ({tid}, {freq:g} MHz {band.upper()})\n"
+                        f"Time on / off: {settings['time_on']}s / {settings['time_off']}s; "
+                        f"thresholds on / off: {settings['threshold_on']:g} / "
+                        f"{settings['threshold_off']:g} dB.")
+
+    try:
+        while True:
+            raw = stream.read(second)
+            if len(raw) < second:
+                break
+            samples = array.array("h")
+            samples.frombytes(raw[: block * 2])
+            if sys.byteorder == "big":
+                samples.byteswap()
+            s, n = rssi_block_powers(samples, band, sample_rate)
+            sig += s
+            noise += n
+            seconds += 1
+            elapsed += 1
+            now_value = rssi_from_powers(s, n) + settings["offset"]
+            recent.append(now_value)
+            last = round(sum(recent) / len(recent), 1)
+            event = alarm.feed(last, elapsed, settings)
+            if event:
+                announce(event, last)
+                write_state(last)
+            _set_mute_flag(tid, alarm.active and settings["mute"])
+            if seconds >= interval:
+                value = round(rssi_from_powers(sig, noise) + settings["offset"], 1)
+                rating = rssi_rating(value)
+                log_file("rssi.log", f'{tid} "{name}" {band} {freq:g} MHz '
+                                     f"rssi={value:.1f} dB ({rating})"
+                                     f"{' LOW SIGNAL' if alarm.active else ''}")
+                write_state(value)
+                if zbx.rssi_monitor:
+                    zbx.send_async([(key, value), (alarm_key, 1 if alarm.active else 0)])
+                sig = noise = 0.0
+                seconds = 0
+                settings = load_rssi_settings(base_dir, station_conf)
+    finally:
+        _set_mute_flag(tid, False)
+    zbx.flush(5.0)
+    mailer.flush(10.0)
+
+
+def read_rssi_states(stations):
+    """Latest reading per station (None if never measured) for ``pituner signal``."""
+    rows = []
+    for st in stations:
+        tid = tuner_id(st["mount"])
+        try:
+            with open(rssi_state_path(tid), encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = None
+        rows.append((tid, st, data))
+    return rows
 
 
 # ------------------------------------------------- EAS attention-tone detection
@@ -2283,7 +2626,7 @@ class Tuner:
         st.genre = _genre_for(st.cfg, genre)
         cmd = build_command(st.cfg, self.ice, index,
                             eas=self.eas_enabled, eas_dir=self.dir, rbds=rbds,
-                            genre=genre, level=self.level_enabled)
+                            genre=genre, level=self.level_enabled, rssi=True)
         try:
             st.proc = subprocess.Popen(
                 cmd, shell=True, stdout=subprocess.DEVNULL,
@@ -2557,6 +2900,88 @@ def _main_level(argv):
     return 0
 
 
+def _main_rssi(argv):
+    parser = argparse.ArgumentParser(prog="tuner.py rssi")
+    parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
+    parser.add_argument("--tuner", required=True, help="tuner id, e.g. tuner1")
+    parser.add_argument("--band", choices=sorted(RSSI_BANDS), required=True)
+    parser.add_argument("--freq", type=float, required=True, help="frequency in MHz")
+    parser.add_argument("--station-conf", default="", help="station file name, for its RSSI_* overrides")
+    parser.add_argument("name", help="station name")
+    parser.add_argument("rate", type=int, help="mono PCM sample rate in Hz")
+    args = parser.parse_args(argv)
+    run_rssi_meter(args.dir, args.tuner, args.name, args.band, args.freq, args.rate,
+                   station_conf=args.station_conf)
+    return 0
+
+
+def _main_mute_gate(argv):
+    parser = argparse.ArgumentParser(prog="tuner.py mute-gate")
+    parser.add_argument("--tuner", required=True, help="tuner id, e.g. tuner1")
+    parser.add_argument("rate", type=int, help="PCM sample rate in Hz")
+    parser.add_argument("channels", type=int, help="audio channel count (1 or 2)")
+    args = parser.parse_args(argv)
+    run_mute_gate(args.tuner, args.rate, args.channels)
+    return 0
+
+
+def _alarm_label(data, enabled):
+    if not enabled:
+        return "off"
+    if data.get("muted"):
+        return "MUTED"
+    if data.get("alarm"):
+        return "LOW SIGNAL"
+    return "ok"
+
+
+def _main_signal(argv):
+    parser = argparse.ArgumentParser(prog="tuner.py signal")
+    parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
+    parser.add_argument("--lines", type=int, default=5, help="recent rssi.log lines to show")
+    args = parser.parse_args(argv)
+    stations = load_stations(os.path.join(args.dir, "stations"))
+    if not stations:
+        print(f"No stations found in {args.dir}/stations")
+        return 1
+    now = time.time()
+    print(f"{'TUNER':<8} {'STATION':<20} {'FREQ':>8}  {'RSSI':>8}  {'RATING':<7} {'ALARM':<11} AGE")
+    settings_rows = []
+    for tid, st, data in read_rssi_states(stations):
+        head = f"{tid:<8} {st['name'][:20]:<20} {st['freq']:>8g}"
+        cfg = load_rssi_settings(args.dir, st["conf"])
+        settings_rows.append((tid, st, cfg))
+        if not st.get("rssi", True):
+            print(f"{head}  {'-':>8}  {'off':<7} {'-':<11} RSSI_MONITOR=false")
+        elif not data:
+            print(f"{head}  {'-':>8}  {'-':<7} {'-':<11} no reading yet")
+        else:
+            age = max(0, int(now - data.get("updated", 0)))
+            stale = "  (stale: is the service running?)" if age > 3 * RSSI_INTERVAL_SECS else ""
+            alarm = _alarm_label(data, cfg["alarm"])
+            print(f"{head}  {data['rssi']:>5.1f} dB  {data['rating']:<7} {alarm:<11} {age}s ago{stale}")
+    print(f"\nRSSI is a relative signal-to-noise estimate: good >= {RSSI_GOOD_DB:g} dB, "
+          f"fair >= {RSSI_FAIR_DB:g} dB.")
+    print("Low Signal alarm settings (pituner config > Low signal alarm):")
+    for tid, st, cfg in settings_rows:
+        if not cfg["alarm"]:
+            print(f"  {tid:<8} alarm off")
+            continue
+        print(f"  {tid:<8} raise < {cfg['threshold_on']:g} dB for {cfg['time_on']}s, "
+              f"clear > {cfg['threshold_off']:g} dB for {cfg['time_off']}s, "
+              f"mute {'on' if cfg['mute'] else 'off'}, offset {cfg['offset']:+g} dB")
+    try:
+        with open(os.path.join(LOG_DIR, "rssi.log"), encoding="utf-8", errors="replace") as f:
+            tail = f.readlines()[-max(0, args.lines):]
+    except OSError:
+        tail = []
+    if tail:
+        print(f"\nRecent {LOG_DIR}/rssi.log:")
+        for line in tail:
+            print("  " + line.rstrip())
+    return 0
+
+
 def _main_config(argv):
     parser = argparse.ArgumentParser(prog="tuner.py config")
     parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
@@ -2624,6 +3049,12 @@ def main(argv=None):
         return _main_detect_eas(argv[1:])
     if argv and argv[0] == "level":
         return _main_level(argv[1:])
+    if argv and argv[0] == "rssi":
+        return _main_rssi(argv[1:])
+    if argv and argv[0] == "mute-gate":
+        return _main_mute_gate(argv[1:])
+    if argv and argv[0] == "signal":
+        return _main_signal(argv[1:])
     if argv and argv[0] == "upgrade-config":
         return _main_upgrade_config(argv[1:])
     if argv and argv[0] == "backup-config":

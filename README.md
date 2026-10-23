@@ -285,6 +285,7 @@ Other commands: `pituner check` (validate config), `pituner test-email`,
 | `SERIAL`    | required        | Dongle serial (matched by number)                |
 | `GAIN`      | none (auto)     | Tuner gain in dB, e.g. `40.2`                    |
 | `RBDS`      | `false`         | FM only: send RBDS text and PTY genre to Icecast |
+| `RSSI_MONITOR` | `true`       | Measure reception every minute (`rssi.log`, `pituner signal`) |
 | `RECORD`    | `false`         | Save this station to 15-minute MP3 files         |
 | `RECORD_KEEP_DAYS` | keep all | Delete recordings older than this many days      |
 | `MOUNT`     | `/tuner1`, `/tuner2`, … | Icecast mount, numbered in file order    |
@@ -327,6 +328,8 @@ station name is in each item's name, e.g. "WLSU: audio level":
 | `rbds.rt`, `rbds.ps` | the current RBDS RadioText and station name (PS) |
 | `eas` | 1 for about 10 seconds when the EAS attention tone is heard |
 | `level` | audio level in dBFS, one value every 10 seconds |
+| `rssi` | reception level in dB (a relative signal-to-noise estimate), averaged over 1 minute |
+| `rssi.alarm` | 1 while the Low Signal alarm is raised |
 | `restarts` | how many times the tuner's pipeline has restarted since the service started |
 | `recording`, `recording.age` | whether it records, and seconds since its newest recording file was written |
 
@@ -335,15 +338,17 @@ Host-wide items: last event, tuners streaming, heartbeat, and an "EAS on any tun
 **Triggers.** Per tuner: *is down* (not streaming for 2 minutes), *serial not
 found*, *EAS attention tone heard*, *restarting repeatedly* (3+ restarts in 15
 minutes), *dead air* (level below the threshold while streaming) and
-*recording stalled*. Host-wide: *heartbeat lost* and *no stations streaming*.
+*weak reception* (the Low Signal alarm is raised) and *recording stalled*. Host-wide: *heartbeat lost* and *no stations streaming*.
 Tune them with template macros on the host: `{$PITUNER.SILENCE.DB}` (default
 `-60`), `{$PITUNER.SILENCE.TIME}` (`1m`) and `{$PITUNER.REC.STALE}` (`300` seconds).
+The low signal thresholds are set in `rssi.conf`, not in Zabbix.
 
 **How it fills in.** Every `INTERVAL` seconds (default 60) Pi-Tuner sends the
 tuner list and values. Zabbix creates the items on first sight, so values appear
 within a couple of minutes. Removed tuners are deleted after 7 days.
 `LEVEL_MONITOR=false` in `zabbix.conf` stops audio levels (and the level-meter
-process on each station).
+process on each station). `RSSI_MONITOR=false` stops sending reception levels
+to Zabbix; the log and `pituner signal` still work.
 
 **Updating from an older template.** Import the new template with *Delete missing*
 ticked (or delete the old `Pi-Tuner` template first), which also drops the old
@@ -375,7 +380,7 @@ sudo systemctl restart pituner.service
 | `FROM`           | `pituner@<host>` | Sender address                                     |
 | `TO`             | —              | One or more recipients, separated by commas          |
 | `SUBJECT_PREFIX` | `[Pi-Tuner]`   | Start of every subject                               |
-| `ALERT_STATION`, `ALERT_EAS`, `ALERT_DISK`, `ALERT_SERVICE` | `true` | Turn each kind of email on or off |
+| `ALERT_STATION`, `ALERT_EAS`, `ALERT_DISK`, `ALERT_SERVICE`, `ALERT_SIGNAL` | `true` | Turn each kind of email on or off |
 | `DOWN_DELAY`     | `120`          | Seconds a station must stay down before the email    |
 | `DISK_MIN_GB`    | `2`            | Free space that triggers the disk-space email        |
 
@@ -611,10 +616,45 @@ The Pi also keeps rotating logs on disk under `/var/log/pituner/`:
 | `tuner.log`  | Tuner health: station status changes, restarts, reloads             |
 | `eas.log`    | EAS attention-tone detections and decoded SAME messages, all stations |
 | `eas-NAME.log` | The same events for one station (e.g. `eas-WLSU.log`), each with the recording that holds the audio |
+| `rssi.log`   | Reception level (RSSI) of every station, once a minute              |
 | `zabbix.log` | Mirror of what's sent to Zabbix (events only, not status snapshots)  |
 | `rbds.log`   | RBDS now-playing updates sent to Icecast, and any update failures    |
 | `recordings.log` | Recording problems (disk full, encoder errors)                   |
 | `email.log`  | Email alerts sent, and any delivery failures                         |
+
+**Low Signal alarm.** Like the Low Signal panel on an Inovonics 541, each station
+has a hysteresis alarm. Set it with `sudo pituner config` > *Low signal alarm
+(RSSI)*; changes apply within a minute, no restart:
+
+| Setting | Default | Meaning |
+|---------|---------|---------|
+| Alarm | on | Low Signal alarm on/off |
+| Mute | off | Silence the Icecast stream while the alarm is raised |
+| Threshold On | 12 dB | Alarm raises when RSSI stays below this... |
+| Time On | 60 s | ...for this long |
+| Threshold Off | 18 dB | Alarm clears when RSSI stays above this... |
+| Time Off | 5 s | ...for this long |
+| Offset | 0 dB | Added to the reading, so you can line it up with a 541 |
+
+Settings live in `rssi.conf`; a station file can override any of them with
+`RSSI_ALARM`, `RSSI_MUTE`, `RSSI_THRESHOLD_ON`, `RSSI_THRESHOLD_OFF`,
+`RSSI_TIME_ON`, `RSSI_TIME_OFF` and `RSSI_OFFSET`. The alarm watches a 5-second
+average. Raising and clearing are written to `rssi.log`, sent to Zabbix
+(`rssi.alarm` item and the *Weak reception* trigger) and emailed (`ALERT_SIGNAL`
+in `smtp.conf`). Our RSSI is not the 541's dB&micro;V: measure the same station on
+both and set Offset to the difference. Mute only silences the Icecast stream;
+recordings, the level meter and EAS detection still get the real audio, and if
+the meter ever dies the mute releases itself within 5 seconds.
+
+**Checking reception.** `pituner signal` prints each station's latest RSSI, a
+rating (good / fair / poor) and the last lines of `rssi.log`. RSSI is
+**estimated from the demodulated signal** (the FM stereo pilot against the
+noise floor; voice against hiss for weather radio), because `rtl_fm` can't
+report true RF power while a station is streaming. It is a relative dB figure for
+comparing antennas, gains and trends over time, not calibrated dBm. A mono-only FM
+station has no pilot and reads low whatever its signal. Ratings use fixed
+thresholds (good 25 dB and up, fair 12 dB and up) that may need adjusting to your
+hardware; the alarm thresholds are separate and adjustable (above).
 
 They rotate at 10 MB (5 compressed copies kept) via `/etc/logrotate.d/pituner`.
 
