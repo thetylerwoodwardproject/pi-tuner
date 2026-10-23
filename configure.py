@@ -69,6 +69,7 @@ ZABBIX_FIELDS = [
     ("INTERVAL", "Heartbeat interval, seconds", "text", valid_interval, "Enter a number, 10 or more."),
     ("EAS_DETECT", "Detect the EAS attention tone", "bool", None, ""),
     ("LEVEL_MONITOR", "Send each tuner's audio level (for dead-air alerts)", "bool", None, ""),
+    ("RSSI_MONITOR", "Send each tuner's reception level (RSSI) to Zabbix", "bool", None, ""),
 ]
 EMAIL_FIELDS = [
     ("ENABLED", "Send email alerts", "bool", None, ""),

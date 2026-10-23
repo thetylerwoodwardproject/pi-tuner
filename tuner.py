@@ -296,6 +296,7 @@ CONFIG_KEYS = {
         ("INTERVAL", "60", True, "status snapshot / heartbeat interval, seconds", None),
         ("EAS_DETECT", "false", True, "true to detect the EAS attention tone", None),
         ("LEVEL_MONITOR", "true", True, "send each tuner's audio level (dBFS) to Zabbix", None),
+        ("RSSI_MONITOR", "true", True, "send each tuner's reception level (RSSI, dB) to Zabbix", None),
     ],
     "smtp.conf": [
         ("ENABLED", "false", True, "true to send email alerts", None),
@@ -318,6 +319,7 @@ CONFIG_KEYS = {
     ],
     "station": [
         ("RBDS", "false", False, "fm only: RBDS text and PTY genre to Icecast", "fm"),
+        ("RSSI_MONITOR", "true", False, "measure reception every minute (rssi.log, pituner signal)", None),
         ("RECORD", "false", False, "save 15-minute MP3 recordings", None),
         ("RECORD_KEEP_DAYS", "", False, "delete recordings older than this many days", None),
     ],
@@ -483,6 +485,14 @@ def _level_tee(name, sample_rate, channels, base_dir, tid):
     """Return the pipeline fragment that taps audio to the level meter."""
     return (f"tee --output-error=warn >(python3 {TUNER_PATH} level "
             f'--dir "{base_dir}" --tuner {tid} "{name}" {sample_rate} {channels})')
+
+
+def _rssi_tee(name, band, freq, sample_rate, base_dir, tid):
+    """Return the pipeline fragment that taps mono demodulated signal to the
+    reception (RSSI) meter: the 192 kHz MPX for FM, the 25 kHz audio for WX."""
+    return (f"tee --output-error=warn >(python3 {TUNER_PATH} rssi "
+            f'--dir "{base_dir}" --tuner {tid} --band {band} --freq {freq:g} '
+            f'"{name}" {sample_rate})')
 
 
 def _record_tee(name, sample_rate, channels, base_dir):
@@ -676,6 +686,7 @@ def load_stations(stations_dir):
             "gain": raw.get("gain", "").strip(),
             "mount": mount,
             "rbds": _parse_bool(raw.get("rbds")) and band == "fm",
+            "rssi": _parse_bool(raw.get("rssi_monitor", "true")),
             "record": _parse_bool(raw.get("record")),
             "record_keep_days": _parse_days(raw.get("record_keep_days")),
             "conf": filename,
@@ -699,16 +710,18 @@ def _genre_for(cfg, genre=""):
 
 
 def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
-                  rbds=False, genre="", record=True, level=False):
+                  rbds=False, genre="", record=True, level=False, rssi=False):
     """Assemble the shell pipeline for one station.
 
     ``genre`` is the Icecast genre for FM (the RBDS PTY found at startup);
     FM falls back to "Radio" when there is none. WX is always "Weather".
     The recorder tap is added when ``record`` and the station's RECORD are set;
-    the level-meter tap when ``level`` (Zabbix audio level) is.
+    the level-meter tap when ``level`` (Zabbix audio level) is. The reception
+    (RSSI) tap is added when ``rssi`` and the station's RSSI_MONITOR are set.
     """
     tid = tuner_id(cfg["mount"])
     record = record and bool(cfg.get("record"))
+    rssi = rssi and cfg.get("rssi", True)
     freq_hz = int(cfg["freq"] * 1_000_000)
     name = _safe_name(cfg["name"])
     genre = _genre_for(cfg, genre)
@@ -721,6 +734,8 @@ def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
 
     if cfg["band"] == "wx":
         cmd = f"rtl_fm -d {device_index} -f {freq_hz} -s 25000 -E deemp -F 9"
+        if rssi:
+            cmd += f" | {_rssi_tee(name, 'wx', cfg['freq'], 25000, eas_dir, tid)}"
         if record:
             cmd += f" | {_record_tee(name, 25000, 1, eas_dir)}"
         if level:
@@ -733,6 +748,8 @@ def build_command(cfg, ice, device_index, eas=False, eas_dir=DEFAULT_DIR,
     if rbds and cfg.get("rbds"):
         log_name = name if record else None
         cmd += f" | {_rbds_tee(cfg['mount'], eas_dir, log_name)}"
+    if rssi:
+        cmd += f" | {_rssi_tee(name, 'fm', cfg['freq'], 192000, eas_dir, tid)}"
     cmd += " | demux -r 192000 -R 48000 -d 75"
     if record:
         cmd += f" | {_record_tee(name, 48000, 2, eas_dir)}"
@@ -779,8 +796,12 @@ TUNER_METRICS = {
     "rbds.ps": ("char", "Current RBDS station name (PS), or the callsign for a scrolling PS"),
     "eas": ("uint", "1 for about 10 seconds when the EAS attention tone is heard"),
     "level": ("float", "Audio level in dBFS (RMS), averaged over 10 seconds"),
+    "rssi": ("float", "Reception level in dB (relative signal-to-noise estimate), averaged over 1 minute"),
 }
 LEVEL_INTERVAL_SECS = 10
+RSSI_INTERVAL_SECS = 60
+RSSI_GOOD_DB = 25.0
+RSSI_FAIR_DB = 12.0
 
 
 def newest_recording_age(base_dir, name, now):
@@ -832,6 +853,7 @@ class ZabbixSender:
             self.interval = 60
         self.interval = max(10, self.interval)
         self.level_monitor = _conf_flag(conf, "level_monitor", True)
+        self.rssi_monitor = _conf_flag(conf, "rssi_monitor", True)
         self._lock = threading.Lock()
         self._queue = queue.Queue(maxsize=200)
         self._worker = None
@@ -1228,6 +1250,116 @@ def run_level_meter(base_dir, tid, name, sample_rate, channels, stream=None,
             zbx.send_async([(key, dbfs_from_sumsq(sumsq, count))])
             sumsq = count = seen = 0
     zbx.flush(5.0)
+
+
+
+# ------------------------------------------------------ reception level (RSSI)
+# rtl_fm gives no RF signal strength, so reception is estimated from the
+# demodulated signal. FM: the 19 kHz stereo pilot against the noise in empty
+# MPX bins (a weak signal raises the noise floor and buries the pilot). WX has
+# no pilot, so voice-band energy is compared with high-band hiss. The figure is
+# a relative dB value: good for trending and alerting, not calibrated dBm.
+# A mono-only FM station has no pilot and reads low whatever its signal.
+
+RSSI_BANDS = {
+    # band: (sample rate, signal bins in Hz, noise bins in Hz)
+    "fm": (192000, (19000.0,), (70000.0, 75000.0, 80000.0, 85000.0)),
+    "wx": (25000, (500.0, 1000.0, 1500.0, 2000.0, 2500.0), (8000.0, 9000.0, 10000.0, 11000.0)),
+}
+RSSI_BLOCK_SECS = 0.05
+RSSI_MAX_DB = 60.0
+
+
+def rssi_rating(rssi):
+    if rssi >= RSSI_GOOD_DB:
+        return "good"
+    return "fair" if rssi >= RSSI_FAIR_DB else "poor"
+
+
+def rssi_state_path(tid):
+    return os.path.join(LOG_DIR, f"rssi-{tid}.json")
+
+
+def rssi_block_powers(samples, band, sample_rate=None):
+    """(signal power, noise power) of one block, mean over the band's bins."""
+    rate, sig, noise = RSSI_BANDS[band]
+    rate = sample_rate or rate
+    n = len(samples)
+    sp = sum(_goertzel(samples, f, rate) for f in sig) / len(sig) / n
+    npow = sum(_goertzel(samples, f, rate) for f in noise) / len(noise) / n
+    return sp, npow
+
+
+def rssi_from_powers(sig, noise):
+    """Signal-to-noise ratio in dB from summed powers, clamped to 0..RSSI_MAX_DB."""
+    if sig <= 0:
+        return 0.0
+    if noise <= 0:
+        return RSSI_MAX_DB
+    return round(min(RSSI_MAX_DB, max(0.0, 10 * math.log10(sig / noise))), 1)
+
+
+def run_rssi_meter(base_dir, tid, name, band, freq, sample_rate, stream=None,
+                   interval=None, zbx=None):
+    """Read mono s16le PCM from stdin; once per ``interval`` seconds of signal,
+    log the reception level to rssi.log, update the state file ``pituner
+    signal`` reads, and send it to Zabbix.
+
+    Each second of signal contributes one short block (RSSI_BLOCK_SECS), which
+    keeps the pure-Python CPU cost small. Exits cleanly on stdin EOF.
+    """
+    stream = stream if stream is not None else sys.stdin.buffer
+    interval = interval or RSSI_INTERVAL_SECS
+    zbx = zbx or ZabbixSender(parse_keyvalue(os.path.join(base_dir, "zabbix.conf")))
+    key = zbx.tuner_key("rssi", tid)
+    second = int(sample_rate) * 2
+    block = int(sample_rate * RSSI_BLOCK_SECS)
+    sig = noise = 0.0
+    seconds = 0
+    while True:
+        raw = stream.read(second)
+        if len(raw) < second:
+            break
+        samples = array.array("h")
+        samples.frombytes(raw[: block * 2])
+        if sys.byteorder == "big":
+            samples.byteswap()
+        s, n = rssi_block_powers(samples, band, sample_rate)
+        sig += s
+        noise += n
+        seconds += 1
+        if seconds >= interval:
+            value = rssi_from_powers(sig, noise)
+            rating = rssi_rating(value)
+            log_file("rssi.log", f'{tid} "{name}" {band} {freq:g} MHz '
+                                 f"rssi={value:.1f} dB ({rating})")
+            try:
+                os.makedirs(LOG_DIR, exist_ok=True)
+                _atomic_write(rssi_state_path(tid), json.dumps({
+                    "tuner": tid, "name": name, "band": band, "freq": freq,
+                    "rssi": value, "rating": rating, "updated": time.time()}),
+                    mode=0o644)
+            except OSError:
+                pass
+            if zbx.rssi_monitor:
+                zbx.send_async([(key, value)])
+            sig = noise = 0.0
+            seconds = 0
+    zbx.flush(5.0)
+
+
+def read_rssi_states(stations):
+    """Latest reading per station (None if never measured) for ``pituner signal``."""
+    rows = []
+    for st in stations:
+        tid = tuner_id(st["mount"])
+        try:
+            with open(rssi_state_path(tid), encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError):
+            data = None
+        rows.append((tid, st, data))
+    return rows
 
 
 # ------------------------------------------------- EAS attention-tone detection
@@ -2283,7 +2415,7 @@ class Tuner:
         st.genre = _genre_for(st.cfg, genre)
         cmd = build_command(st.cfg, self.ice, index,
                             eas=self.eas_enabled, eas_dir=self.dir, rbds=rbds,
-                            genre=genre, level=self.level_enabled)
+                            genre=genre, level=self.level_enabled, rssi=True)
         try:
             st.proc = subprocess.Popen(
                 cmd, shell=True, stdout=subprocess.DEVNULL,
@@ -2557,6 +2689,54 @@ def _main_level(argv):
     return 0
 
 
+def _main_rssi(argv):
+    parser = argparse.ArgumentParser(prog="tuner.py rssi")
+    parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
+    parser.add_argument("--tuner", required=True, help="tuner id, e.g. tuner1")
+    parser.add_argument("--band", choices=sorted(RSSI_BANDS), required=True)
+    parser.add_argument("--freq", type=float, required=True, help="frequency in MHz")
+    parser.add_argument("name", help="station name")
+    parser.add_argument("rate", type=int, help="mono PCM sample rate in Hz")
+    args = parser.parse_args(argv)
+    run_rssi_meter(args.dir, args.tuner, args.name, args.band, args.freq, args.rate)
+    return 0
+
+
+def _main_signal(argv):
+    parser = argparse.ArgumentParser(prog="tuner.py signal")
+    parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
+    parser.add_argument("--lines", type=int, default=5, help="recent rssi.log lines to show")
+    args = parser.parse_args(argv)
+    stations = load_stations(os.path.join(args.dir, "stations"))
+    if not stations:
+        print(f"No stations found in {args.dir}/stations")
+        return 1
+    now = time.time()
+    print(f"{'TUNER':<8} {'STATION':<20} {'FREQ':>8}  {'RSSI':>8}  {'RATING':<7} AGE")
+    for tid, st, data in read_rssi_states(stations):
+        head = f"{tid:<8} {st['name'][:20]:<20} {st['freq']:>8g}"
+        if not st.get("rssi", True):
+            print(f"{head}  {'-':>8}  {'off':<7} RSSI_MONITOR=false")
+        elif not data:
+            print(f"{head}  {'-':>8}  {'-':<7} no reading yet")
+        else:
+            age = max(0, int(now - data.get("updated", 0)))
+            stale = "  (stale: is the service running?)" if age > 3 * RSSI_INTERVAL_SECS else ""
+            print(f"{head}  {data['rssi']:>5.1f} dB  {data['rating']:<7} {age}s ago{stale}")
+    print(f"\nRSSI is a relative signal-to-noise estimate: good >= {RSSI_GOOD_DB:g} dB, "
+          f"fair >= {RSSI_FAIR_DB:g} dB.")
+    try:
+        with open(os.path.join(LOG_DIR, "rssi.log"), encoding="utf-8", errors="replace") as f:
+            tail = f.readlines()[-max(0, args.lines):]
+    except OSError:
+        tail = []
+    if tail:
+        print(f"\nRecent {LOG_DIR}/rssi.log:")
+        for line in tail:
+            print("  " + line.rstrip())
+    return 0
+
+
 def _main_config(argv):
     parser = argparse.ArgumentParser(prog="tuner.py config")
     parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
@@ -2624,6 +2804,10 @@ def main(argv=None):
         return _main_detect_eas(argv[1:])
     if argv and argv[0] == "level":
         return _main_level(argv[1:])
+    if argv and argv[0] == "rssi":
+        return _main_rssi(argv[1:])
+    if argv and argv[0] == "signal":
+        return _main_signal(argv[1:])
     if argv and argv[0] == "upgrade-config":
         return _main_upgrade_config(argv[1:])
     if argv and argv[0] == "backup-config":

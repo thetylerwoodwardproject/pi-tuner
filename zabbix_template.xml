@@ -307,6 +307,18 @@
                             <units>dBFS</units>
                             <description>Audio level in dBFS (RMS), averaged over 10 seconds</description>
                         </item_prototype>
+                        <item_prototype>
+                            <uuid>ac12899446ea4b95a1dd5fc84589be92</uuid>
+                            <name>{#NAME}: reception (RSSI)</name>
+                            <type>TRAP</type>
+                            <key>pituner.tuner.rssi[{#TUNER}]</key>
+                            <delay>0</delay>
+                            <history>31d</history>
+                            <trends>365d</trends>
+                            <value_type>FLOAT</value_type>
+                            <units>dB</units>
+                            <description>Reception level in dB (relative signal-to-noise estimate), averaged over 1 minute</description>
+                        </item_prototype>
                     </item_prototypes>
                     <trigger_prototypes>
                         <trigger_prototype>
@@ -315,6 +327,13 @@
                             <name>Dead air on {#NAME}</name>
                             <priority>HIGH</priority>
                             <description>The tuner is streaming but its audio level has stayed below the silence threshold ({$PITUNER.SILENCE.DB} dBFS) for {$PITUNER.SILENCE.TIME}.</description>
+                        </trigger_prototype>
+                        <trigger_prototype>
+                            <uuid>22786e851c5a40b3bb83073210ac3a93</uuid>
+                            <expression>avg(/Pi-Tuner/pituner.tuner.rssi[{#TUNER}],{$PITUNER.RSSI.TIME})&lt;{$PITUNER.RSSI.MIN} and last(/Pi-Tuner/pituner.tuner.up[{#TUNER}])=1</expression>
+                            <name>Weak reception on {#NAME}</name>
+                            <priority>WARNING</priority>
+                            <description>The tuner's reception level has averaged below {$PITUNER.RSSI.MIN} dB for {$PITUNER.RSSI.TIME}. Check the antenna, gain and frequency.</description>
                         </trigger_prototype>
                         <trigger_prototype>
                             <uuid>34471143cf744d0b881f2cd1ac7f7645</uuid>
@@ -336,6 +355,16 @@
                     <macro>{$PITUNER.SILENCE.TIME}</macro>
                     <value>1m</value>
                     <description>How long the level must stay below the threshold before the dead-air trigger fires.</description>
+                </macro>
+                <macro>
+                    <macro>{$PITUNER.RSSI.MIN}</macro>
+                    <value>12</value>
+                    <description>Reception level (dB) below which the weak-reception trigger fires. Heuristic: tune it to your stations.</description>
+                </macro>
+                <macro>
+                    <macro>{$PITUNER.RSSI.TIME}</macro>
+                    <value>10m</value>
+                    <description>How long the average reception level must stay below the threshold before the trigger fires.</description>
                 </macro>
                 <macro>
                     <macro>{$PITUNER.REC.STALE}</macro>

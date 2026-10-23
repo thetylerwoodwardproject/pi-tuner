@@ -170,8 +170,8 @@ class StationTests(MenuCase):
 
 class SectionTests(MenuCase):
     def test_zabbix_edit(self):
-        # ENABLED?, SERVER, PORT, HOSTNAME, INTERVAL, EAS_DETECT?, LEVEL_MONITOR?
-        m, _ = self.menu(["3", "n", "zbx2.internal", "", "", "30", "y", "", "q", "n"])
+        # ENABLED?, SERVER, PORT, HOSTNAME, INTERVAL, EAS_DETECT?, LEVEL_MONITOR?, RSSI_MONITOR?
+        m, _ = self.menu(["3", "n", "zbx2.internal", "", "", "30", "y", "", "", "q", "n"])
         m.run()
         conf = tuner.parse_keyvalue(os.path.join(self.d, "zabbix.conf"))
         self.assertEqual((conf["enabled"], conf["server"], conf["interval"], conf["eas_detect"]),

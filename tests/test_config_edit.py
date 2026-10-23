@@ -142,11 +142,11 @@ class UpgradeConfigTests(unittest.TestCase):
         before = {n: tuner.parse_keyvalue(os.path.join(self.d, n))
                   for n in ("icecast.conf", "zabbix.conf")}
         added = tuner.upgrade_config(self.d)
-        self.assertEqual(added["zabbix.conf"], ["KEY_EAS", "EAS_DETECT", "LEVEL_MONITOR"])
+        self.assertEqual(added["zabbix.conf"], ["KEY_EAS", "EAS_DETECT", "LEVEL_MONITOR", "RSSI_MONITOR"])
         self.assertEqual(added["icecast.conf"], ["ADMIN_USER", "ADMIN_PASSWORD"])
         self.assertEqual(added["smtp.conf"], ["(new file)"])
-        self.assertEqual(added["stations/station1.conf"], ["RBDS", "RECORD", "RECORD_KEEP_DAYS"])
-        self.assertEqual(added["stations/station2.conf"], ["RECORD", "RECORD_KEEP_DAYS"])  # wx: no RBDS
+        self.assertEqual(added["stations/station1.conf"], ["RBDS", "RSSI_MONITOR", "RECORD", "RECORD_KEEP_DAYS"])
+        self.assertEqual(added["stations/station2.conf"], ["RSSI_MONITOR", "RECORD", "RECORD_KEEP_DAYS"])  # wx: no RBDS
         for name, old in before.items():
             now = tuner.parse_keyvalue(os.path.join(self.d, name))
             for key, value in old.items():
