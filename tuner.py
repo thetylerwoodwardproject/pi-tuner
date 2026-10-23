@@ -2868,6 +2868,8 @@ def _main_upgrade_config(argv):
     parser = argparse.ArgumentParser(prog="tuner.py upgrade-config")
     parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
     parser.add_argument("--dry-run", action="store_true", help="only list what's missing")
+    parser.add_argument("--no-restart", action="store_true",
+                        help="don't offer to restart the service afterwards")
     args = parser.parse_args(argv)
     result = missing_config_keys(args.dir) if args.dry_run else upgrade_config(args.dir)
     if not result:
@@ -2876,7 +2878,35 @@ def _main_upgrade_config(argv):
     verb = "Missing from" if args.dry_run else "Added to"
     for name, keys in result.items():
         print(f"{verb} {name}: {', '.join(keys)}")
+    if not args.dry_run and not args.no_restart:
+        offer_service_restart()
     return 0
+
+
+def offer_service_restart(ask=input, run=subprocess.run, interactive=None):
+    """After new settings were added, offer to restart the service: a reload
+    only restarts stations whose own config changed, so new pipeline pieces need
+    a full restart. Only asks on a terminal; otherwise says what to run."""
+    command = "sudo systemctl restart pituner"
+    if interactive is None:
+        interactive = sys.stdin.isatty()
+    if not interactive:
+        print(f"Restart the service to use the new settings: {command}")
+        return False
+    try:
+        answer = ask("Restart the Pi-Tuner service now so the new settings take effect? [Y/n] ")
+    except EOFError:
+        answer = "n"
+    if answer.strip().lower() not in ("", "y", "yes"):
+        print(f"Later, run: {command}")
+        return False
+    try:
+        ok = run(["systemctl", "restart", "pituner.service"], check=False).returncode == 0
+    except OSError:
+        ok = False
+    print("Restarted; stations are starting again." if ok else
+          f"Couldn't restart automatically. Run: {command}")
+    return ok
 
 
 def _main_backup_config(argv):

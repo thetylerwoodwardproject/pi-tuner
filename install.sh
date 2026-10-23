@@ -695,7 +695,7 @@ if [ "${KEEP_SETTINGS}" = "1" ]; then
     smtp_to="$(sed -n 's/^TO=//p' "${APP_DIR}/smtp.conf" | head -n1)"
   fi
   # Add settings that newer versions understand (never changes a value you set).
-  python3 "${APP_DIR}/tuner.py" upgrade-config --dir "${APP_DIR}" || warn "Could not update the config files."
+  python3 "${APP_DIR}/tuner.py" upgrade-config --no-restart --dir "${APP_DIR}" || warn "Could not update the config files."
   chown -R pituner:pituner "${APP_DIR}"
   chmod 600 "${APP_DIR}"/*.conf
 else
