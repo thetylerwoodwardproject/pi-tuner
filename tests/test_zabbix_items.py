@@ -168,7 +168,7 @@ class SnapshotTests(Base):
         req = self.zbx.wait_for(1)[0]
         sent = {key.split("[")[0].replace("pituner.tuner.", "") for key in req if key.startswith("pituner.tuner.")}
         # RBDS text, level, RSSI and EAS come from the helper processes
-        self.assertEqual(sent | {"rbds.rt", "rbds.ps", "eas", "level", "rssi"},
+        self.assertEqual(sent | {"rbds.rt", "rbds.ps", "eas", "level", "rssi", "rssi.alarm"},
                          set(tuner.TUNER_METRICS))
 
     def test_status_change_is_sent_immediately(self):

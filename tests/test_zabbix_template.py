@@ -98,8 +98,7 @@ class TemplateTests(unittest.TestCase):
         self.assertEqual(values["{$PITUNER.SILENCE.DB}"], "-60")
         self.assertIn("{$PITUNER.SILENCE.TIME}", values)
         self.assertIn("{$PITUNER.REC.STALE}", values)
-        self.assertEqual(values["{$PITUNER.RSSI.MIN}"], str(int(tuner.RSSI_FAIR_DB)))
-        self.assertIn("{$PITUNER.RSSI.TIME}", values)
+        self.assertNotIn("{$PITUNER.RSSI.MIN}", values)     # thresholds live in rssi.conf
 
     def test_value_map_used_by_up_exists(self):
         up = [p for p in self.rule.findall("item_prototypes/item_prototype")

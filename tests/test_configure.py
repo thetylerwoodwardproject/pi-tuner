@@ -196,7 +196,7 @@ class SectionTests(MenuCase):
         self.addCleanup(srv.close)
         answers = ["4",
                    "y", "127.0.0.1", str(srv.port), "none", "n", "u", "me@pi", "a@example.com, b@example.com",
-                   "y", "y", "y", "y", "90", "3",
+                   "y", "y", "y", "y", "y", "90", "3",
                    "y",           # send a test email now
                    "q", "n"]
         m, _ = self.menu(answers, secrets=["p"])
@@ -214,9 +214,34 @@ class SectionTests(MenuCase):
     def test_email_test_reports_failures(self):
         write(os.path.join(self.d, "smtp.conf"),
               "ENABLED=true\nHOST=127.0.0.1\nPORT=1\nSECURITY=none\nTO=a@b.c\nTIMEOUT=2\n", 0o600)
-        m, _ = self.menu(["4"] + [""] * 6 + ["", ""] + [""] * 6 + ["y", "q"], secrets=[""])
+        m, _ = self.menu(["4"] + [""] * 6 + ["", ""] + [""] * 7 + ["y", "q"], secrets=[""])
         m.run()
         self.assertIn("Test email FAILED", self.text())
+
+
+class RssiMenuTests(MenuCase):
+    def test_low_signal_menu_edits_rssi_conf_creating_it(self):
+        # ALARM?, MUTE?, THRESHOLD_ON, THRESHOLD_OFF, TIME_ON, TIME_OFF, OFFSET
+        m, _ = self.menu(["5", "", "y", "20", "30", "45", "3", "17", "q", "n"])
+        m.run()
+        conf = tuner.parse_keyvalue(os.path.join(self.d, "rssi.conf"))
+        self.assertEqual((conf["alarm"], conf["mute"], conf["threshold_on"], conf["threshold_off"],
+                          conf["time_on"], conf["time_off"], conf["offset"]),
+                         ("true", "true", "20", "30", "45", "3", "17"))
+        self.assertIn("Saved rssi.conf", self.text())
+        self.assertEqual(tuner.rssi_settings(conf)["offset"], 17.0)
+
+    def test_bad_input_reprompts_and_negative_offset_is_allowed(self):
+        m, _ = self.menu(["5", "", "", "abc", "15", "", "", "", "-3.5", "q", "n"])
+        m.run()
+        self.assertIn("Enter a number", self.text())
+        conf = tuner.parse_keyvalue(os.path.join(self.d, "rssi.conf"))
+        self.assertEqual((conf["threshold_on"], conf["offset"]), ("15", "-3.5"))
+
+    def test_off_below_on_is_called_out(self):
+        m, _ = self.menu(["5", "", "", "20", "10", "", "", "", "q", "n"])
+        m.run()
+        self.assertIn("Threshold Off can't be below Threshold On", self.text())
 
 
 class ApplyTests(MenuCase):

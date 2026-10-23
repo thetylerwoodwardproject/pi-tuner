@@ -42,11 +42,26 @@ def valid_interval(value):
     return value.isdigit() and int(value) >= 10
 
 
+def valid_signed_float(value):
+    try:
+        float(value)
+        return True
+    except ValueError:
+        return False
+
+
 def valid_float(value):
     try:
         return float(value) >= 0
     except ValueError:
         return False
+
+
+def _num(value, default):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
 
 
 def truthy(value):
@@ -71,6 +86,16 @@ ZABBIX_FIELDS = [
     ("LEVEL_MONITOR", "Send each tuner's audio level (for dead-air alerts)", "bool", None, ""),
     ("RSSI_MONITOR", "Send each tuner's reception level (RSSI) to Zabbix", "bool", None, ""),
 ]
+RSSI_FIELDS = [
+    ("ALARM", "Low Signal alarm", "bool", None, ""),
+    ("MUTE", "Mute the stream while the alarm is raised", "bool", None, ""),
+    ("THRESHOLD_ON", "Threshold On, dB (alarm raises below this)", "text", valid_float, "Enter a number."),
+    ("THRESHOLD_OFF", "Threshold Off, dB (alarm clears above this)", "text", valid_float, "Enter a number."),
+    ("TIME_ON", "Time On, seconds below Threshold On", "text", valid_uint, "Enter a whole number."),
+    ("TIME_OFF", "Time Off, seconds above Threshold Off", "text", valid_uint, "Enter a whole number."),
+    ("OFFSET", "Offset, dB added to the reading (to match another meter)", "text",
+     valid_signed_float, "Enter a number, e.g. 17 or -3."),
+]
 EMAIL_FIELDS = [
     ("ENABLED", "Send email alerts", "bool", None, ""),
     ("HOST", "SMTP server", "text", None, ""),
@@ -85,6 +110,7 @@ EMAIL_FIELDS = [
     ("ALERT_EAS", "Email on the EAS attention tone", "bool", None, ""),
     ("ALERT_DISK", "Email when recording disk space is low", "bool", None, ""),
     ("ALERT_SERVICE", "Email when the service starts / stops", "bool", None, ""),
+    ("ALERT_SIGNAL", "Email when the low signal alarm raises / clears", "bool", None, ""),
     ("DOWN_DELAY", "Seconds down before the 'down' email", "text", valid_uint, "Enter a whole number."),
     ("DISK_MIN_GB", "Low disk space threshold, GB", "text", valid_float, "Enter a number."),
 ]
@@ -387,6 +413,15 @@ class Menu:
         if self.ask_bool("Send a test email now", False):
             self.test_email()
 
+    def rssi_menu(self):
+        self.out("\nLow Signal alarm (RSSI). Defaults for every station; a station file can\n"
+                 "override them. Changes apply within a minute. Enter keeps the value shown.")
+        self.edit_file("rssi.conf", RSSI_FIELDS)
+        conf = tuner.parse_keyvalue(self._path("rssi.conf"))
+        s = tuner.rssi_settings(conf)
+        if s["threshold_off"] != _num(conf.get("threshold_off"), s["threshold_off"]):
+            self.out(f"  Threshold Off can't be below Threshold On; {s['threshold_off']:g} dB is used.")
+
     def apply(self):
         """Offer to reload the running service so changes take effect."""
         if not self.changed:
@@ -411,7 +446,7 @@ class Menu:
         self.out(f"Pi-Tuner configuration ({self.dir})")
         while True:
             self.out("\n  1) Stations\n  2) Icecast connection\n  3) Zabbix\n"
-                     "  4) Email alerts\n  q) Quit")
+                     "  4) Email alerts\n  5) Low signal alarm (RSSI)\n  q) Quit")
             choice = self.inp("Choose: ").strip().lower()
             if choice == "1":
                 self.stations_menu()
@@ -424,10 +459,12 @@ class Menu:
                 self.edit_file("zabbix.conf", ZABBIX_FIELDS)
             elif choice == "4":
                 self.email_menu()
+            elif choice == "5":
+                self.rssi_menu()
             elif choice in ("q", "quit", "exit", ""):
                 break
             else:
-                self.out("  Choose 1-4 or q.")
+                self.out("  Choose 1-5 or q.")
         self.apply()
         return 0
 
