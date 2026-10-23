@@ -1,8 +1,10 @@
+import io
 import os
 import stat
 import sys
 import tempfile
 import unittest
+from unittest import mock
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 import tuner  # noqa: E402
@@ -215,6 +217,54 @@ class BackupTests(unittest.TestCase):
     def test_nothing_to_back_up(self):
         with tempfile.TemporaryDirectory() as d:
             self.assertIsNone(tuner.backup_config(d))
+
+
+class RestartOfferTests(unittest.TestCase):
+    def offer(self, answer, interactive=True, returncode=0):
+        calls, out = [], io.StringIO()
+        run = lambda cmd, **kw: calls.append(cmd) or type("R", (), {"returncode": returncode})()  # noqa: E731
+        with mock.patch("sys.stdout", out):
+            result = tuner.offer_service_restart(ask=lambda prompt: answer, run=run,
+                                                 interactive=interactive)
+        return result, calls, out.getvalue()
+
+    def test_enter_or_yes_restarts(self):
+        for answer in ("", "y", "YES"):
+            result, calls, text = self.offer(answer)
+            self.assertTrue(result)
+            self.assertEqual(calls, [["systemctl", "restart", "pituner.service"]])
+            self.assertIn("Restarted", text)
+
+    def test_no_does_not_restart_and_says_how(self):
+        result, calls, text = self.offer("n")
+        self.assertFalse(result)
+        self.assertEqual(calls, [])
+        self.assertIn("sudo systemctl restart pituner", text)
+
+    def test_not_a_terminal_never_asks(self):
+        result, calls, text = self.offer("y", interactive=False)
+        self.assertEqual((result, calls), (False, []))
+        self.assertIn("sudo systemctl restart pituner", text)
+
+    def test_failed_restart_is_reported(self):
+        result, _, text = self.offer("y", returncode=1)
+        self.assertFalse(result)
+        self.assertIn("Couldn't restart automatically", text)
+
+    def test_subcommand_offers_only_after_changes_and_not_on_dry_run_or_no_restart(self):
+        for args, expect in (([], True), (["--dry-run"], False), (["--no-restart"], False)):
+            with tempfile.TemporaryDirectory() as d:
+                write(os.path.join(d, "zabbix.conf"), "ENABLED=false\n")
+                with mock.patch.object(tuner, "offer_service_restart") as offered, \
+                        mock.patch("sys.stdout", io.StringIO()):
+                    tuner._main_upgrade_config(["--dir", d] + args)
+                self.assertEqual(offered.called, expect, args)
+        with tempfile.TemporaryDirectory() as d:        # nothing to add: no offer
+            tuner.upgrade_config(d)
+            with mock.patch.object(tuner, "offer_service_restart") as offered, \
+                    mock.patch("sys.stdout", io.StringIO()):
+                tuner._main_upgrade_config(["--dir", d])
+            offered.assert_not_called()
 
 
 class ShippedFilesTests(unittest.TestCase):

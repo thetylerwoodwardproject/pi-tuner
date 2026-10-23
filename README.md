@@ -254,7 +254,7 @@ with `--upgrade`, `--reconfigure` or `--fresh`.
 - Your settings are first copied to `/opt/pituner/backups/<date-time>/` (last 5 kept).
 - New settings are added with safe defaults and **your values are never
   changed**. Run it yourself with `sudo pituner upgrade-config` (`--dry-run` to
-  only list what's missing).
+  only list what's missing); when it adds settings it offers to restart the service.
 - The Icecast admin password stays in `/etc/icecast2/icecast.xml`; Pi-Tuner
   doesn't store it.
 

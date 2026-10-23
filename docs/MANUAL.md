@@ -228,7 +228,7 @@ gain. For weak stations try a fixed gain and a better antenna.
 | `sudo pituner config` | Interactive menu for stations, Icecast, Zabbix and email |
 | `sudo pituner signal` | Show each station's reception level (RSSI), a good/fair/poor rating and the latest `rssi.log` lines |
 | `sudo pituner check` | Validate the config and print each station's pipeline without launching anything |
-| `sudo pituner upgrade-config [--dry-run]` | Add settings newer versions understand, keeping your values |
+| `sudo pituner upgrade-config [--dry-run]` | Add settings newer versions understand, keeping your values, then offer to restart the service |
 | `sudo pituner backup-config` | Copy your settings to `/opt/pituner/backups/<date-time>/` (last 5 kept) |
 | `sudo pituner test-email [--to ADDRESS]` | Send one test email using `smtp.conf` and report any SMTP error |
 | `sudo systemctl reload pituner.service` | Re-read the config files and apply station changes |
