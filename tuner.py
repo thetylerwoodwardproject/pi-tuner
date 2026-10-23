@@ -1968,7 +1968,8 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
         if not last or now - last["at"] > SAME_EOM_SECS:
             return msg + " (no SAME header decoded for it)"
         what = last["summary"] or "undecoded header"
-        out = f"{msg}: {what} [{last['header']}]"
+        began = time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(last["started"]))
+        out = f"{msg}: {what}; alert started {began}{last['issued']} [{last['header']}]"
         last.clear()  # one header, one EOM
         return out
 
@@ -1984,13 +1985,14 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
         if info is None:
             # Bit errors can leave a header that matches the format but isn't a
             # valid message; keep the raw text rather than losing the alert.
-            last.update(at=now, header=header, summary="")
+            last.update(at=now, started=collector.first, header=header, summary="", issued="")
             msg = f"SAME header heard on {name} but could not be decoded [{header}]"
             print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
             on_record(msg, now)
             return
         summary = same_summary(info)
-        last.update(at=now, header=header, summary=summary)
+        last.update(at=now, started=collector.first, header=header, summary=summary,
+                    issued=f" (issued {info['issued'].strftime('%Y-%m-%d %H:%M UTC')})")
         msg = f"EAS message on {name}: {summary}"
         print(f"[{time.strftime('%Y-%m-%d %H:%M:%S')}] {msg}", file=sys.stderr, flush=True)
         on_record(f"{msg} [{header}]", now)

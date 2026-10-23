@@ -207,7 +207,8 @@ class DetectorTests(unittest.TestCase):
         eoms = [c.args[1] for c in lf.call_args_list
                 if c.args[0] == "eas.log" and "end of message" in c.args[1]]
         self.assertEqual(len(eoms), 1, eoms)
-        for text in ("RWT", "Required Weekly Test", "FIPS 22071", "FIPS 22051", header):
+        for text in ("RWT", "Required Weekly Test", "FIPS 22071", "FIPS 22051", header,
+                     "alert started 20", "(issued 20"):
             self.assertIn(text, eoms[0])
         _, lf = self.run_detector(same_audio.afsk("NNNN", rate) + [0] * rate, rate)
         eoms = [c.args[1] for c in lf.call_args_list if "end of message" in c.args[1]]
