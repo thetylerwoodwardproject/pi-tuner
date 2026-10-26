@@ -1,3 +1,5 @@
+import contextlib
+import io
 import os
 import shutil
 import subprocess
@@ -211,6 +213,15 @@ class EnumerateDevicesTests(unittest.TestCase):
         self.fake_rtl_test("echo 'Found 1 device(s):'; "
                            "echo '  0:  Realtek, RTL2838UHIDIR, SN: 00001039'; sleep 30")
         self.assertEqual(tuner.enumerate_devices(timeout=5), [("0", "00001039")])
+
+    def test_detect_subcommand_prints_index_and_serial(self):
+        self.fake_rtl_test("echo 'Found 2 device(s):'; "
+                           "echo '  0:  Realtek, RTL2838UHIDIR, SN: 00001015'; "
+                           "echo '  1:  Realtek, RTL2838UHIDIR, SN: 00001016'; sleep 30")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            self.assertEqual(tuner.main(["detect"]), 0)
+        self.assertEqual(out.getvalue(), "0\t00001015\n1\t00001016\n")
 
     def test_hung_rtl_test_cannot_block_the_supervisor(self):
         self.fake_rtl_test("sleep 30")            # silent, like a wedged libusb
