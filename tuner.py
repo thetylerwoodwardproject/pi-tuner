@@ -2953,6 +2953,14 @@ def _main_backup_config(argv):
     return 0
 
 
+def _main_detect(argv):
+    """Print one 'index<TAB>serial' line per attached dongle (used by install.sh)."""
+    argparse.ArgumentParser(prog="tuner.py detect").parse_args(argv)
+    for idx, serial in enumerate_devices():
+        print(f"{idx}\t{serial}")
+    return 0
+
+
 def _main_level(argv):
     parser = argparse.ArgumentParser(prog="tuner.py level")
     parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
@@ -3112,6 +3120,8 @@ def main(argv=None):
         argv = sys.argv[1:]
     if argv and argv[0] == "detect-eas":
         return _main_detect_eas(argv[1:])
+    if argv and argv[0] == "detect":
+        return _main_detect(argv[1:])
     if argv and argv[0] == "level":
         return _main_level(argv[1:])
     if argv and argv[0] == "rssi":
