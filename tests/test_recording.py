@@ -150,3 +150,62 @@ class PruneTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class EasClipTests(unittest.TestCase):
+    """The saved EAS MP3 covers the alert plus EAS_CLIP_PAD_SECS either side."""
+    RATE = 8000
+
+    def record(self, d, start, secs, cut):
+        pcm = b"".join(struct.pack("<h", int(3000 * math.sin(i / 20)))
+                       for i in range(int(self.RATE * secs)))
+        n = [0]
+
+        def clock():
+            n[0] += 1
+            return start + (n[0] - 1) * 0.5
+        tuner.run_recorder(d, "WLSU", self.RATE, 1, stream=io.BytesIO(pcm), clock=clock,
+                           boundary=lambda now: now + cut)
+
+    def duration(self, path):
+        out = subprocess.run(["ffprobe", "-v", "error", "-show_entries", "format=duration",
+                              "-of", "default=nw=1:nk=1", path], capture_output=True, text=True)
+        return float(out.stdout)
+
+    def test_clip_within_one_recording(self):
+        with tempfile.TemporaryDirectory() as d:
+            t0 = ts(2026, 3, 5, 14, 0, 0)
+            self.record(d, t0, 60, 3600)
+            rel = tuner.make_eas_clip(d, "WLSU", t0 + 20, t0 + 40)
+            self.assertEqual(rel, "recordings/WLSU/2026/03/05/eas/260305_140020_WLSU_EAS.mp3")
+            self.assertAlmostEqual(self.duration(os.path.join(d, rel)), 20, delta=0.5)
+            self.assertEqual(os.listdir(os.path.join(d, "recordings/WLSU/2026/03/05/eas")),
+                             ["260305_140020_WLSU_EAS.mp3"])
+
+    def test_clip_joins_two_recordings(self):
+        with tempfile.TemporaryDirectory() as d:
+            t0 = ts(2026, 3, 5, 14, 0, 0)
+            self.record(d, t0, 40, 20)  # new file every 20 s
+            rel = tuner.make_eas_clip(d, "WLSU", t0 + 10, t0 + 30)
+            self.assertAlmostEqual(self.duration(os.path.join(d, rel)), 20, delta=0.5)
+
+    def test_clip_start_before_first_recording_is_trimmed(self):
+        with tempfile.TemporaryDirectory() as d:
+            t0 = ts(2026, 3, 5, 14, 0, 0)
+            self.record(d, t0, 30, 3600)
+            rel = tuner.make_eas_clip(d, "WLSU", t0 - 10, t0 + 10)
+            self.assertAlmostEqual(self.duration(os.path.join(d, rel)), 10, delta=0.5)
+
+    def test_no_recording_means_no_clip(self):
+        with tempfile.TemporaryDirectory() as d:
+            t0 = ts(2026, 3, 5, 14, 0, 0)
+            self.assertEqual(tuner.make_eas_clip(d, "WLSU", t0, t0 + 10), "")
+            self.assertFalse(os.path.exists(os.path.join(d, "recordings")))
+
+    def test_eas_clips_do_not_count_as_the_live_recording(self):
+        with tempfile.TemporaryDirectory() as d:
+            t0 = ts(2026, 3, 5, 14, 0, 0)
+            self.record(d, t0, 30, 3600)
+            tuner.make_eas_clip(d, "WLSU", t0 + 5, t0 + 15)
+            self.assertEqual(tuner.recording_covering(d, "WLSU", t0 + 12),
+                             "recordings/WLSU/2026/03/05/260305_140000_WLSU.mp3")
