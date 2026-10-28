@@ -1585,6 +1585,11 @@ EAS_WINDOW_SECS = 0.25
 EAS_CONFIRM_WINDOWS = 2
 EAS_HOLD_SECS = 10
 EAS_COOLDOWN_SECS = 60
+# The saved EAS MP3 runs from this long before the alert starts to this long
+# after it ends (the end-of-message, or EAS_CLIP_MAX_SECS if none is heard).
+EAS_CLIP_PAD_SECS = 10
+EAS_CLIP_MAX_SECS = 600
+EAS_CLIP_LAG_SECS = 3  # extra wait after the pad so the encoder has written the tail
 # Each tone must carry at least this fraction of the window's total energy to
 # count. A clean 853+960 dual-tone puts ~0.25 into each tone; noise/music is
 # far lower. Raise it to reduce false positives, lower it if detection is
@@ -1943,6 +1948,71 @@ def recording_covering(base_dir, name, when):
     return os.path.relpath(os.path.join(day, max(names)), base_dir) if names else ""
 
 
+def _recording_starts(base_dir, name, start, end):
+    """[(start_epoch, path)] of the station's MP3s that may hold audio between
+    ``start`` and ``end``, oldest first. Each recording runs until the next
+    one starts; only the last has no known end."""
+    days, t = [], datetime.datetime.fromtimestamp(start).replace(hour=0, minute=0, second=0, microsecond=0)
+    while t.timestamp() <= end:
+        days.append(os.path.dirname(recording_path(base_dir, name, t.timestamp())))
+        t += datetime.timedelta(days=1)
+    files = []
+    for day in days:
+        try:
+            names = os.listdir(day)
+        except OSError:
+            continue
+        for n in names:
+            try:
+                if n.endswith(".mp3"):
+                    files.append((datetime.datetime.strptime(n[:13], "%y%m%d_%H%M%S").timestamp(),
+                                  os.path.join(day, n)))
+            except ValueError:
+                pass
+    files.sort()
+    keep = []
+    for i, (t0, path) in enumerate(files):
+        nxt = files[i + 1][0] if i + 1 < len(files) else None
+        if t0 < end and (nxt is None or nxt > start):
+            keep.append((t0, path))
+    return keep
+
+
+def make_eas_clip(base_dir, name, start, end, run=subprocess.run):
+    """Cut the station's recording from ``start`` to ``end`` (epoch seconds)
+    into recordings/NAME/YYYY/MM/DD/eas/YYMMDD_HHMMSS_NAME_EAS.mp3, joining two
+    recordings when the alert straddles a quarter hour. Returns the path
+    relative to ``base_dir``, or "" if the station isn't recording or ffmpeg
+    fails. The clip appears under its final name only once complete."""
+    files = _recording_starts(base_dir, name, start, end)
+    if not files:
+        return ""
+    t_first = files[0][0]
+    start = max(start, t_first)
+    day = os.path.dirname(recording_path(base_dir, name, start))
+    out = os.path.join(day, "eas", os.path.basename(recording_path(base_dir, name, start))[:-4] + "_EAS.mp3")
+    part, listing = out + ".part", out + ".txt"
+    try:
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(listing, "w") as f:
+            for _t, path in files:
+                f.write("file '%s'\n" % path.replace("'", "'\\''"))
+        run(["ffmpeg", "-nostdin", "-loglevel", "error", "-y", "-f", "concat", "-safe", "0",
+             "-ss", "%.2f" % (start - t_first), "-i", listing, "-t", "%.2f" % (end - start),
+             "-acodec", "libmp3lame", "-b:a", "128k", "-f", "mp3", part],
+            check=True, timeout=120, stdin=subprocess.DEVNULL)
+        os.replace(part, out)
+    except (OSError, subprocess.SubprocessError) as e:
+        log_file("recordings.log", f"{out}: cannot save EAS clip: {e}")
+        out = ""
+    for leftover in (listing, part):
+        try:
+            os.remove(leftover)
+        except OSError:
+            pass
+    return os.path.relpath(out, base_dir) if out else ""
+
+
 def eas_log_name(name):
     """Per-station EAS log: eas-NAME.log (spaces and odd characters dropped)."""
     return f"eas-{_rec_name(name)}.log"
@@ -1970,6 +2040,28 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
         """Log line plus the recording that holds this audio, if there is one."""
         rec = recording_covering(base_dir, name, when)
         log_eas(name, f"{msg} [recording: {rec}]" if rec else msg)
+
+    clips = []          # [due, start, end] audio clips waiting for their tail to be recorded
+    workers = []
+    event = {}          # {"start": epoch} while an alert is on the air
+
+    def save_clip(start, end):
+        """Cut the EAS MP3 in the background so the audio pipeline never waits on ffmpeg."""
+        def work():
+            rec = make_eas_clip(base_dir, name, start, end)
+            if rec:
+                fmt = lambda t: time.strftime("%H:%M:%S", time.localtime(t))
+                log_eas(name, f"EAS audio saved for {name}: {fmt(start)} to {fmt(end)} "
+                              f"[clip: {rec}]")
+        th = threading.Thread(target=work)
+        th.start()
+        workers.append(th)
+
+    def finish_event(end):
+        """The alert is over: queue its clip, padded either side, for when the tail exists."""
+        begin = event.pop("start", end)
+        clips.append([end + EAS_CLIP_PAD_SECS + EAS_CLIP_LAG_SECS,
+                      begin - EAS_CLIP_PAD_SECS, end + EAS_CLIP_PAD_SECS])
 
     same = SameDecoder(sample_rate)
     collector = SameCollector()
@@ -2033,13 +2125,20 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
         for kind, text in same.feed(samples):
             if kind == "header":
                 collector.add(text, now)
+                event.setdefault("start", now)
             elif now - last_eom >= SAME_EOM_DUP_SECS:  # the EOM is sent as three bursts
                 last_eom = now
                 pending = collector.poll(now + SAME_COLLECT_SECS)  # don't let a short alert's EOM beat its header
                 if pending:
                     report_same(pending, now)
                 on_record(eom_message(now), now)
+                finish_event(now)
         header = collector.poll(now)
+        if "start" in event and now - event["start"] > EAS_CLIP_MAX_SECS:
+            finish_event(now)  # no end-of-message heard; don't wait forever
+        for item in [c for c in clips if c[0] <= now]:
+            clips.remove(item)
+            save_clip(item[1], item[2])
         if header:
             report_same(header, now)
         if pulsing and now - pulse_start >= EAS_HOLD_SECS:
@@ -2071,12 +2170,19 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
                     f"{time.strftime('%Y-%m-%d %H:%M:%S')}.\n\n"
                     "The SAME header was not decoded (weak signal, or it came before "
                     "Pi-Tuner was listening).")
+            event.setdefault("start", now)
             pulsing = True
             pulse_start = now
             hits = 0
     header = collector.poll(time.time() + SAME_COLLECT_SECS)  # stream ended mid-window
     if header:
         report_same(header, time.time())
+    if event:
+        finish_event(time.time())
+    for _due, begin, end in clips:  # stream ended: cut whatever was recorded
+        save_clip(begin, end)
+    for th in workers:
+        th.join(timeout=150)
     if pulsing and zbx.enabled:  # pipeline ended mid-pulse: don't leave the item stuck at 1
         zbx.send(eas_items(0))
     mailer.flush(10.0)

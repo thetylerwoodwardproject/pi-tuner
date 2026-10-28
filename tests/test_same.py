@@ -290,6 +290,28 @@ class DetectorTests(unittest.TestCase):
         self.assertTrue(any("Severe Thunderstorm Warning" in s.get("pituner.event", "")
                             for s in sent), sent)
 
+    def test_alert_is_clipped_with_the_padding_either_side(self):
+        rate = 25000
+        now = datetime.datetime.now(UTC)
+        stamp = f"{now.timetuple().tm_yday:03d}{now.hour:02d}{now.minute:02d}"
+        pcm = same_audio.burst_stream(f"ZCZC-CIV-RWT-022071+0015-{stamp}-WLSU-", rate)
+        stdin = mock.Mock(buffer=io.BytesIO(struct.pack("<%dh" % len(pcm), *pcm)))
+        with tempfile.TemporaryDirectory() as d, \
+                mock.patch.object(tuner, "Mailer", lambda conf: FakeMailer()), \
+                mock.patch.object(tuner, "log_file") as lf, \
+                mock.patch.object(tuner, "make_eas_clip",
+                                  return_value="recordings/WLSU/x/eas/c.mp3") as clip, \
+                mock.patch.object(sys, "stdin", stdin):
+            t = time.time()
+            tuner.run_eas_detector(d, "WLSU", rate, 1)
+        self.assertEqual(clip.call_count, 1)
+        _, name, begin, end = clip.call_args[0]
+        self.assertEqual(name, "WLSU")
+        self.assertLess(begin, t)  # starts 10 s before the alert was heard
+        self.assertAlmostEqual(end - begin, 2 * tuner.EAS_CLIP_PAD_SECS, delta=15)
+        self.assertTrue(any("[clip: recordings/WLSU/x/eas/c.mp3]" in c.args[1]
+                            for c in lf.call_args_list))
+
 
 if __name__ == "__main__":
     unittest.main()

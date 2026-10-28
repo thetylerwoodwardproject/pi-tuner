@@ -475,8 +475,27 @@ The tone line can come a few seconds before the message line, because the three
 header bursts are compared before the message is reported. A tone with
 `(no SAME header decoded)` means the digital header wasn't received cleanly.
 
+### EAS audio clips
+
+When the station records (`RECORD=true`), each alert is also cut out of the
+recording as its own MP3, from **10 seconds before the alert starts to 10
+seconds after it ends**. It is saved next to the recordings, in an `eas` folder
+for that day (so it shows in the recordings web listing too):
+
+```
+recordings/WLSU/2026/10/22/eas/261022_150734_WLSU_EAS.mp3
+```
+
+The clip is made about 13 seconds after the end-of-message (so the trailing 10
+seconds exist), and the log gets a line ending `[clip: ...]`. If the alert
+runs over a quarter-hour boundary the two recordings are joined. If no
+end-of-message is heard the clip stops after 10 minutes. Clips are removed with
+the other recordings by `RECORD_KEEP_DAYS`. A station that isn't recording has
+no clip.
+
 Tune the tone thresholds with the constants at the top of `tuner.py`
-(`EAS_TONE_RATIO`, `EAS_HOLD_SECS`, `EAS_COOLDOWN_SECS`).
+(`EAS_TONE_RATIO`, `EAS_HOLD_SECS`, `EAS_COOLDOWN_SECS`); the clip padding is
+`EAS_CLIP_PAD_SECS`.
 
 ## RBDS now-playing (optional)
 
