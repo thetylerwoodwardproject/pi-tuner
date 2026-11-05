@@ -636,6 +636,7 @@ For example:
 | Station won't start              | `journalctl -u pituner -f`                         |
 | Wrong/no dongle found            | `rtl_test` (check serials)                         |
 | `serial not found` but `rtl_test` shows the right serial | Unplug and replug the dongle, or reboot the Pi (see below) |
+| Some tuners missing from Icecast, but all record | `grep '<sources>' /etc/icecast2/icecast.xml` must be 20 or more (see below) |
 | Config doesn't parse             | `tuner.py --dir /opt/pituner --check`              |
 | No audio / stream missing        | `http://<pi>:8000/status-json.xsl` in a browser    |
 | Changes didn't apply             | `sudo systemctl reload pituner.service`            |
@@ -654,6 +655,17 @@ recovers on its own (`serial_not_found -> streaming`), or run
 `sudo systemctl restart pituner`. A `usb_open error -3` from `rtl_test` also means
 a permissions problem; install the udev rules (`rtl-sdr.rules`), make sure the
 user is in `plugdev`, and replug.
+
+**Only some stations appear in Icecast, but all of them record.** Icecast's
+`<sources>` limit may be too low (Debian's default is 2), so it refuses every
+stream after the first two. Set it to 20 or more and restart both services:
+
+```bash
+sudo sed -i 's|<sources>[0-9]*</sources>|<sources>20</sources>|' /etc/icecast2/icecast.xml
+sudo systemctl restart icecast2 && sudo systemctl restart pituner
+```
+
+The installer now raises a low `<sources>` value automatically on upgrade.
 
 The service restarts any station whose pipeline dies, backing off between attempts.
 
