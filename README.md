@@ -635,6 +635,7 @@ For example:
 |----------------------------------|----------------------------------------------------|
 | Station won't start              | `journalctl -u pituner -f`                         |
 | Wrong/no dongle found            | `rtl_test` (check serials)                         |
+| `serial not found` but `rtl_test` shows the right serial | Unplug and replug the dongle, or reboot the Pi (see below) |
 | Config doesn't parse             | `tuner.py --dir /opt/pituner --check`              |
 | No audio / stream missing        | `http://<pi>:8000/status-json.xsl` in a browser    |
 | Changes didn't apply             | `sudo systemctl reload pituner.service`            |
