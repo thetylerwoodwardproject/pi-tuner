@@ -5,7 +5,7 @@ Reads one KEY=value config file per station from the ``stations/`` directory,
 resolves each dongle serial to a device index, and streams each station to a
 local Icecast server. A small supervisor restarts a station if its pipeline
 dies, and (optionally) pushes status/events to a Zabbix server over the
-Zabbix trapper protocol.
+Zabbix trapper protocol and/or a Graylog (syslog) server.
 
 No web UI, no auth, no alerts daemon -- just a config directory and this file,
 run under systemd.
@@ -25,7 +25,7 @@ Usage:
              15 minutes, under <dir>/recordings/<name>/YYYY/MM/DD/.
 
     tuner.py config --dir /opt/pituner
-             interactive menu to edit stations, Icecast, Zabbix and email.
+             interactive menu to edit stations, Icecast, Zabbix, Graylog and email.
 
     tuner.py upgrade-config --dir /opt/pituner [--dry-run]
              add settings that newer versions understand to existing config
@@ -36,6 +36,9 @@ Usage:
 
     tuner.py test-email --dir /opt/pituner [--to ADDRESS]
              send one test message using smtp.conf and report any SMTP error.
+
+    tuner.py test-syslog --dir /opt/pituner
+             send one test message using syslog.conf (Graylog) and report any error.
 
     tuner.py level --dir /opt/pituner --tuner ID <name> <rate> <channels>
              send the audio level (dBFS) of raw s16le PCM from stdin to Zabbix.
@@ -299,6 +302,15 @@ CONFIG_KEYS = {
         ("LEVEL_MONITOR", "true", True, "send each tuner's audio level (dBFS) to Zabbix", None),
         ("RSSI_MONITOR", "true", True, "send each tuner's reception level (RSSI, dB) to Zabbix", None),
     ],
+    "syslog.conf": [
+        ("ENABLED", "false", True, "true to send every Zabbix item and event to a syslog server (Graylog)", None),
+        ("SERVER", "", True, "your Graylog / syslog server", None),
+        ("PORT", "514", True, "the port of the Graylog Syslog input", None),
+        ("PROTOCOL", "udp", True, "udp or tcp (must match the Graylog input)", None),
+        ("FACILITY", "local0", True, "syslog facility: local0-local7, daemon, user, ...", None),
+        ("APP_NAME", "pituner", True, "application name on each message", None),
+        ("HOSTNAME", "", True, "source host name (blank = this machine's name)", None),
+    ],
     "smtp.conf": [
         ("ENABLED", "false", True, "true to send email alerts", None),
         ("HOST", "", True, "SMTP server", None),
@@ -339,6 +351,7 @@ CONFIG_KEYS = {
 CONFIG_HEADERS = {
     "smtp.conf": "# Pi-Tuner SMTP email alerts. Keep this file mode 600: it holds the password.",
     "zabbix.conf": "# Pi-Tuner Zabbix trapper settings",
+    "syslog.conf": "# Pi-Tuner syslog (Graylog) settings",
     "rssi.conf": ("# Pi-Tuner Low Signal alarm (RSSI). These are the defaults for every station;\n"
                   "# a station file can override any of them with RSSI_ALARM, RSSI_MUTE,\n"
                   "# RSSI_THRESHOLD_ON, RSSI_THRESHOLD_OFF, RSSI_TIME_ON, RSSI_TIME_OFF, RSSI_OFFSET.\n"
@@ -374,13 +387,13 @@ def _missing_specs(path, specs, band=None):
 
 
 # config files newer versions create when missing (upgrade-config)
-NEW_FILES = ("smtp.conf", "rssi.conf")
+NEW_FILES = ("smtp.conf", "rssi.conf", "syslog.conf")
 
 
 def _config_targets(base_dir):
     """(display name, path, spec key, band) for each existing config file."""
     targets = []
-    for name in ("icecast.conf", "zabbix.conf", "smtp.conf", "rssi.conf"):
+    for name in ("icecast.conf", "zabbix.conf", "syslog.conf", "smtp.conf", "rssi.conf"):
         path = os.path.join(base_dir, name)
         if os.path.isfile(path):
             targets.append((name, path, name, None))
@@ -860,8 +873,132 @@ def newest_recording_age(base_dir, name, now):
     return round(now - newest, 1) if newest is not None else -1.0
 
 
+SYSLOG_FACILITIES = {
+    "kern": 0, "user": 1, "mail": 2, "daemon": 3, "auth": 4, "syslog": 5, "lpr": 6,
+    "news": 7, "uucp": 8, "cron": 9, "authpriv": 10, "ftp": 11,
+    **{f"local{n}": 16 + n for n in range(8)},
+}
+SYSLOG_WARNING_WORDS = re.compile(
+    r"\b(down|no_audio|serial_not_found|stopped|failed|raised|eas)\b", re.IGNORECASE)
+_TUNER_KEY = re.compile(r"^pituner\.tuner\.(?P<metric>[^\[]+)\[(?P<tid>[^\]]+)\]$")
+
+
+def _sd_escape(value):
+    """RFC 5424 structured-data parameter value: one line, with " \\ ] escaped."""
+    value = " ".join(str(value).split())
+    return value.replace("\\", "\\\\").replace('"', '\\"').replace("]", "\\]")
+
+
+class SyslogSender:
+    """Sends everything Zabbix gets to a syslog server (e.g. a Graylog Syslog
+    input) as RFC 5424 messages over UDP or TCP, stdlib only.
+
+    Each item becomes one message: the item key, value, tuner id and metric are
+    structured-data fields (Graylog turns them into searchable fields) and the
+    text is ``key=value``, or just the text for events. Best-effort like Zabbix:
+    a failed send is logged and dropped, never raised.
+    """
+
+    SD_ID = "pituner@32473"    # 32473 is the IANA example enterprise number
+
+    def __init__(self, conf):
+        self.enabled = _conf_flag(conf, "enabled", False)
+        self.server = conf.get("server", "")
+        self.port = _conf_number(conf, "port", 514)
+        proto = str(conf.get("protocol", "udp")).strip().lower()
+        self.protocol = proto if proto in ("udp", "tcp") else "udp"
+        fac = str(conf.get("facility", "local0")).strip().lower()
+        self.facility = SYSLOG_FACILITIES.get(fac, SYSLOG_FACILITIES["local0"])
+        self.app_name = "".join(
+            c for c in (conf.get("app_name", "") or "pituner") if 33 <= ord(c) <= 126)[:48] or "pituner"
+        self.hostname = "".join(
+            c for c in (conf.get("hostname", "") or socket.gethostname()) if 33 <= ord(c) <= 126
+        )[:255] or "-"
+        self._lock = threading.Lock()
+        self._sock = None
+
+    @property
+    def available(self):
+        return self.enabled and bool(self.server)
+
+    def format(self, key, value, now=None):
+        """The RFC 5424 message (bytes, newline-terminated) for one item."""
+        is_event = key.endswith(".event")
+        text = " ".join(str(value).split())
+        if is_event:
+            severity = 4 if SYSLOG_WARNING_WORDS.search(text) else 6
+            msgid, msg = "event", text
+        else:
+            severity = 6
+            msgid, msg = "metric", f"{key}={text}"
+        sd = f'key="{_sd_escape(key)}" value="{_sd_escape(text)}"'
+        m = _TUNER_KEY.match(key)
+        if m:
+            sd += f' tuner="{_sd_escape(m["tid"])}" metric="{_sd_escape(m["metric"])}"'
+        stamp = datetime.datetime.fromtimestamp(
+            time.time() if now is None else now, datetime.timezone.utc
+        ).isoformat(timespec="milliseconds").replace("+00:00", "Z")
+        line = (f"<{self.facility * 8 + severity}>1 {stamp} {self.hostname} {self.app_name} "
+                f"{os.getpid()} {msgid} [{self.SD_ID} {sd}] {msg}\n")
+        return line.encode("utf-8")[:4096]
+
+    def _connect(self):
+        if self.protocol == "tcp":
+            s = socket.create_connection((self.server, self.port), timeout=5)
+            s.settimeout(5)
+            return s
+        info = socket.getaddrinfo(self.server, self.port, type=socket.SOCK_DGRAM)[0]
+        s = socket.socket(info[0], socket.SOCK_DGRAM)
+        s.connect(info[4])
+        return s
+
+    def send(self, items):
+        """items: iterable of (key, value) pairs, one message each."""
+        if not self.available:
+            return
+        lines = [self.format(k, v) for k, v in items
+                 if k != ZabbixSender.key_discovery]   # discovery JSON is Zabbix-only
+        if not lines:
+            return
+        try:
+            with self._lock:
+                if self._sock is None:
+                    self._sock = self._connect()
+                try:
+                    for line in lines:
+                        # UDP: strip the newline, one datagram per message
+                        self._sock.sendall(line if self.protocol == "tcp" else line[:-1])
+                except OSError:
+                    self._close()      # stale TCP connection: retry once on a new one
+                    self._sock = self._connect()
+                    for line in lines:
+                        self._sock.sendall(line if self.protocol == "tcp" else line[:-1])
+        except Exception as e:  # noqa: BLE001 - best-effort send, never fatal
+            with self._lock:
+                self._close()
+            log(f"syslog send failed: {e}", err=True)
+
+    def _close(self):
+        if self._sock is not None:
+            try:
+                self._sock.close()
+            except OSError:
+                pass
+            self._sock = None
+
+
+def load_sender(base_dir):
+    """A ZabbixSender wired to zabbix.conf and syslog.conf in ``base_dir``."""
+    zbx = ZabbixSender(parse_keyvalue(os.path.join(base_dir, "zabbix.conf")))
+    zbx.syslog = SyslogSender(parse_keyvalue(os.path.join(base_dir, "syslog.conf")))
+    return zbx
+
+
 class ZabbixSender:
     """Minimal Zabbix trapper (zabbix_sender protocol) client, stdlib only.
+
+    Also fans every send out to the optional SyslogSender (Graylog), so each
+    caller feeds both with one call. ``enabled`` is true when either is on.
 
     Fire-and-forget: a failed or timed-out send is logged and otherwise ignored
     so Zabbix being unreachable can never block or crash tuning.
@@ -870,7 +1007,8 @@ class ZabbixSender:
     key_discovery = "pituner.tuners.discovery"
 
     def __init__(self, conf):
-        self.enabled = str(conf.get("enabled", "false")).lower() in ("1", "true", "yes", "on")
+        self.zabbix_enabled = str(conf.get("enabled", "false")).lower() in ("1", "true", "yes", "on")
+        self.syslog = SyslogSender({})   # load_sender() swaps in the syslog.conf one
         self.server = conf.get("server", "")
         try:
             self.port = int(conf.get("port", "10051"))
@@ -892,8 +1030,12 @@ class ZabbixSender:
         self._queue = queue.Queue(maxsize=200)
         self._worker = None
 
+    @property
+    def enabled(self):
+        return self.zabbix_enabled or self.syslog.enabled
+
     def _available(self):
-        return self.enabled and bool(self.server)
+        return (self.zabbix_enabled and bool(self.server)) or self.syslog.available
 
     @staticmethod
     def tuner_key(metric, tid):
@@ -910,6 +1052,9 @@ class ZabbixSender:
         if mirror:
             log_file("zabbix.log", json.dumps(dict(items)))
         if not self._available():
+            return
+        self.syslog.send(items)
+        if not (self.zabbix_enabled and self.server):
             return
         data = [{"host": self.hostname, "key": key, "value": str(value)}
                 for key, value in items]
@@ -1263,7 +1408,7 @@ def run_level_meter(base_dir, tid, name, sample_rate, channels, stream=None,
     audio pipeline this taps. Exits cleanly on stdin EOF.
     """
     stream = stream if stream is not None else sys.stdin.buffer
-    zbx = zbx or ZabbixSender(parse_keyvalue(os.path.join(base_dir, "zabbix.conf")))
+    zbx = zbx or load_sender(base_dir)
     key = zbx.tuner_key("level", tid)
     chunk = int(sample_rate * 0.5) * 2 * channels
     window = int(sample_rate * channels * interval)   # samples per value
@@ -1472,7 +1617,7 @@ def run_rssi_meter(base_dir, tid, name, band, freq, sample_rate, stream=None,
     """
     stream = stream if stream is not None else sys.stdin.buffer
     interval = interval or RSSI_INTERVAL_SECS
-    zbx = zbx or ZabbixSender(parse_keyvalue(os.path.join(base_dir, "zabbix.conf")))
+    zbx = zbx or load_sender(base_dir)
     if mailer is None:
         mailer = Mailer(parse_keyvalue(os.path.join(base_dir, "smtp.conf")))
     key = zbx.tuner_key("rssi", tid)
@@ -2033,7 +2178,7 @@ def run_eas_detector(base_dir, name, sample_rate, channels, tid=""):
     Best-effort and non-blocking: a missing Zabbix server is ignored and the
     process exits cleanly on stdin EOF, never stalling the audio pipeline.
     """
-    zbx = ZabbixSender(parse_keyvalue(os.path.join(base_dir, "zabbix.conf")))
+    zbx = load_sender(base_dir)
     mailer = Mailer(parse_keyvalue(os.path.join(base_dir, "smtp.conf")))
 
     def on_record(msg, when):
@@ -2698,7 +2843,7 @@ class Tuner:
         }
         self._warned_redsea = False
         zbx = parse_keyvalue(os.path.join(self.dir, "zabbix.conf"))
-        self.zbx = ZabbixSender(zbx)
+        self.zbx = load_sender(self.dir)
         eas_on = str(zbx.get("eas_detect", "false")).lower() in ("1", "true", "yes", "on")
         self.mailer = Mailer(parse_keyvalue(os.path.join(self.dir, "smtp.conf")))
         self.alerts.mailer = self.mailer
@@ -2953,8 +3098,10 @@ def run_check(base_dir):
     log(f"icecast: source@{tuner.ice['host']}:{tuner.ice['port']} "
         f"(password {'set' if tuner.ice['password'] else 'MISSING'})")
     zbx_state = (f"enabled -> {tuner.zbx.server}:{tuner.zbx.port}"
-                 if tuner.zbx.enabled else "disabled")
+                 if tuner.zbx.zabbix_enabled else "disabled")
     log(f"zabbix: {zbx_state}")
+    sl = tuner.zbx.syslog
+    log("syslog: " + (f"enabled -> {sl.server}:{sl.port}/{sl.protocol}" if sl.enabled else "disabled"))
     missing = missing_config_keys(base_dir)
     if missing:
         total = sum(len(v) for v in missing.values())
@@ -3194,6 +3341,29 @@ def _main_test_email(argv):
     return 0
 
 
+def _main_test_syslog(argv):
+    parser = argparse.ArgumentParser(prog="tuner.py test-syslog")
+    parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
+    args = parser.parse_args(argv)
+    sl = SyslogSender(parse_keyvalue(os.path.join(args.dir, "syslog.conf")))
+    if not sl.available:
+        print(f"Syslog is not enabled: set ENABLED=true and SERVER in {args.dir}/syslog.conf")
+        return 1
+    try:
+        s = sl._connect()
+        try:
+            line = sl.format("pituner.event", "Test message from Pi-Tuner")
+            s.sendall(line if sl.protocol == "tcp" else line[:-1])
+        finally:
+            s.close()
+    except Exception as e:  # noqa: BLE001 - report any failure to the user
+        print(f"Test message FAILED: {type(e).__name__}: {e}")
+        return 1
+    note = " (UDP gives no delivery confirmation: check Graylog)" if sl.protocol == "udp" else ""
+    print(f"Test message sent to {sl.server}:{sl.port} ({sl.protocol}){note}")
+    return 0
+
+
 def _main_record(argv):
     parser = argparse.ArgumentParser(prog="tuner.py record")
     parser.add_argument("--dir", default=DEFAULT_DIR, help="install directory")
@@ -3215,7 +3385,7 @@ def _main_rbds_meta(argv):
     args = parser.parse_args(argv)
     zbx = None
     if args.tuner:
-        zbx = ZabbixSender(parse_keyvalue(os.path.join(args.dir, "zabbix.conf")))
+        zbx = load_sender(args.dir)
         zbx = zbx if zbx.enabled else None
     run_rbds_meta(args.dir, args.mount, log_name=args.log_name, zbx=zbx, tid=args.tuner)
     return 0
@@ -3244,6 +3414,8 @@ def main(argv=None):
         return _main_config(argv[1:])
     if argv and argv[0] == "test-email":
         return _main_test_email(argv[1:])
+    if argv and argv[0] == "test-syslog":
+        return _main_test_syslog(argv[1:])
     if argv and argv[0] == "record":
         return _main_record(argv[1:])
     if argv and argv[0] == "rbds-meta":

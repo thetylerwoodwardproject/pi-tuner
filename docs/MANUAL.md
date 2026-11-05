@@ -656,6 +656,32 @@ within a couple of minutes. Removed tuners are deleted after 7 days.
 
 An unreachable Zabbix never affects tuning; sends are best-effort and logged.
 
+## 14a. Graylog (syslog) output
+
+Everything sent to Zabbix is also sent to a syslog server such as Graylog, as
+RFC 5424 messages over UDP or TCP. It works with or without Zabbix.
+
+**Setup**
+
+1. In Graylog, create a **Syslog UDP** or **Syslog TCP** input (TCP is
+   newline-delimited).
+2. Edit `syslog.conf`, or run `sudo pituner config` and choose **6) Graylog**.
+   Set `ENABLED=true`, `SERVER`, `PORT` and `PROTOCOL` to match the input.
+3. Run `sudo python3 /opt/pituner/tuner.py test-syslog --dir /opt/pituner`,
+   then `sudo systemctl reload pituner`.
+
+**What you get.** One message per item. The message text is `key=value`, or just
+the text for events. Graylog also extracts these fields from the structured
+data: `key`, `value`, and, for per-tuner items, `tuner` and `metric`. Station
+down, no-audio, EAS and stopped events are severity *warning*; everything else
+is *info*. Search for `metric:level AND tuner:tuner1`, or `key:pituner.event`.
+
+`EAS_DETECT`, `LEVEL_MONITOR`, `RSSI_MONITOR` and `INTERVAL` in `zabbix.conf`
+also decide what goes to Graylog, even if Zabbix is not enabled. The Zabbix
+discovery list is not sent. UDP gives no delivery confirmation, so use TCP if
+you need to know messages arrive. Sends are best-effort and logged; an
+unreachable Graylog never affects tuning.
+
 ## 15. Logs
 
 Rotating logs are kept under `/var/log/pituner/`: (older versions used `/var/www/pituner/`; the installer moves existing logs over)
@@ -723,6 +749,18 @@ Keys and defaults are in the table in the reception section above.
 | `EAS_DETECT` | `true` | Detect the EAS tone and decode SAME for Zabbix |
 | `LEVEL_MONITOR` | `true` | Send each tuner's audio level (dBFS) |
 | `RSSI_MONITOR` | `true` | Send each tuner's reception level (RSSI, dB) |
+
+### `syslog.conf`
+
+| Key | Default | Meaning |
+|-----|---------|---------|
+| `ENABLED` | `false` | Send every Zabbix item and event to a syslog server |
+| `SERVER` | | Your Graylog / syslog server |
+| `PORT` | `514` | Port of the Graylog Syslog input |
+| `PROTOCOL` | `udp` | `udp` or `tcp`; must match the input |
+| `FACILITY` | `local0` | `local0`-`local7`, `daemon`, `user`, ... |
+| `APP_NAME` | `pituner` | Application name on each message |
+| `HOSTNAME` | blank | Source host name; blank uses this machine's name |
 
 ### `smtp.conf`
 

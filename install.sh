@@ -756,6 +756,28 @@ EOF
   info "Zabbix skipped. You can enable it later by editing ${APP_DIR}/zabbix.conf."
 fi
 
+# ------------------------------------------------------------- graylog
+SYSLOG_ENABLED="false"
+if [ "${INTERACTIVE}" = "1" ] && confirm "Also send everything to Graylog (syslog)?"; then
+  sl_server=$(ask "  Graylog server address" "graylog.internal.example.com")
+  sl_port=$(ask "  Graylog Syslog input port" "514")
+  sl_proto=$(ask "  Protocol (udp or tcp)" "udp")
+  case "${sl_proto}" in
+    udp|tcp) ;;
+    *) warn "Unknown protocol '${sl_proto}', using udp."; sl_proto="udp" ;;
+  esac
+  sed -e 's|^ENABLED=.*|ENABLED=true|' -e "s|^SERVER=.*|SERVER=${sl_server}|" \
+      -e "s|^PORT=.*|PORT=${sl_port}|" -e "s|^PROTOCOL=.*|PROTOCOL=${sl_proto}|" \
+      "${SRC}/syslog.conf" > "${APP_DIR}/syslog.conf"
+  SYSLOG_ENABLED="true"
+  ok "Graylog configured. Create a Syslog ${sl_proto^^} input on port ${sl_port} in Graylog."
+else
+  install -m 600 "${SRC}/syslog.conf" "${APP_DIR}/syslog.conf"
+  info "Graylog skipped. You can enable it later by editing ${APP_DIR}/syslog.conf."
+fi
+chown pituner:pituner "${APP_DIR}/syslog.conf"
+chmod 600 "${APP_DIR}/syslog.conf"
+
 # ------------------------------------------------------------- email
 EMAIL_ENABLED="false"
 smtp_to=""
@@ -1070,6 +1092,9 @@ else
 fi
 if [ "${ZABBIX_ENABLED}" = "true" ]; then
   echo "  Zabbix: import ${APP_DIR}/zabbix_template.xml and attach it to your host."
+fi
+if [ "${SYSLOG_ENABLED:-false}" = "true" ]; then
+  echo "  Graylog: syslog is sent to ${sl_server}:${sl_port} (${sl_proto}). Test: sudo python3 ${APP_DIR}/tuner.py test-syslog --dir ${APP_DIR}"
 fi
 if [ "${EMAIL_ENABLED}" = "true" ]; then
   echo "  Email alerts go to ${smtp_to}. Test: sudo python3 ${APP_DIR}/tuner.py test-email --dir ${APP_DIR}"
