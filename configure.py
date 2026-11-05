@@ -86,6 +86,15 @@ ZABBIX_FIELDS = [
     ("LEVEL_MONITOR", "Send each tuner's audio level (for dead-air alerts)", "bool", None, ""),
     ("RSSI_MONITOR", "Send each tuner's reception level (RSSI) to Zabbix", "bool", None, ""),
 ]
+SYSLOG_FIELDS = [
+    ("ENABLED", "Send every alert and status item to Graylog (syslog)", "bool", None, ""),
+    ("SERVER", "Graylog / syslog server address", "text", None, ""),
+    ("PORT", "Syslog input port", "text", valid_port, "Enter a port number (1-65535)."),
+    ("PROTOCOL", "Protocol (must match the Graylog input)", "choice:udp,tcp", None, ""),
+    ("FACILITY", "Syslog facility (local0-local7, daemon, user, ...)", "text", None, ""),
+    ("APP_NAME", "Application name on each message", "text", None, ""),
+    ("HOSTNAME", "Source host name (blank = this machine's name)", "text", None, ""),
+]
 RSSI_FIELDS = [
     ("ALARM", "Low Signal alarm", "bool", None, ""),
     ("MUTE", "Mute the stream while the alarm is raised", "bool", None, ""),
@@ -217,7 +226,7 @@ class Menu:
                 value = self.ask_choice(label, kind.split(":", 1)[1].split(","), current or "starttls")
             else:
                 value = self.ask(label, current, validator, error or "Not valid, try again.",
-                                 allow_clear=not specs[key][2] or key in ("USERNAME", "FROM"))
+                                 allow_clear=not specs[key][2] or key in ("USERNAME", "FROM", "HOSTNAME"))
             if value != current:
                 changes[key] = value
         if self._save(path, changes):
@@ -446,7 +455,7 @@ class Menu:
         self.out(f"Pi-Tuner configuration ({self.dir})")
         while True:
             self.out("\n  1) Stations\n  2) Icecast connection\n  3) Zabbix\n"
-                     "  4) Email alerts\n  5) Low signal alarm (RSSI)\n  q) Quit")
+                     "  4) Email alerts\n  5) Low signal alarm (RSSI)\n  6) Graylog (syslog)\n  q) Quit")
             choice = self.inp("Choose: ").strip().lower()
             if choice == "1":
                 self.stations_menu()
@@ -461,10 +470,14 @@ class Menu:
                 self.email_menu()
             elif choice == "5":
                 self.rssi_menu()
+            elif choice == "6":
+                self.out("\nGraylog (syslog) - receives everything Zabbix gets "
+                         "(Enter keeps the value shown)")
+                self.edit_file("syslog.conf", SYSLOG_FIELDS)
             elif choice in ("q", "quit", "exit", ""):
                 break
             else:
-                self.out("  Choose 1-5 or q.")
+                self.out("  Choose 1-6 or q.")
         self.apply()
         return 0
 

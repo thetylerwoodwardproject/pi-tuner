@@ -357,6 +357,27 @@ ticked (or delete the old `Pi-Tuner` template first), which also drops the old
 
 An unreachable Zabbix never affects tuning; sends are best-effort and logged.
 
+## Graylog / syslog (optional)
+
+Everything Pi-Tuner sends to Zabbix (events, EAS tones, station state, audio
+level, RSSI, RBDS text and the heartbeat) can also go to **Graylog** as RFC 5424
+syslog, with or without Zabbix. The installer asks, or:
+
+1. In Graylog, create a **Syslog UDP** (or **Syslog TCP**) input.
+2. Edit `syslog.conf` (or use `sudo pituner config`, option 6): set
+   `ENABLED=true`, `SERVER`, `PORT` and `PROTOCOL` to match the input.
+3. Check it with `sudo python3 /opt/pituner/tuner.py test-syslog --dir /opt/pituner`
+   and `sudo systemctl reload pituner`.
+
+Each item is one message. Graylog parses these fields: `key`, `value`, and for
+per-tuner items `tuner` (e.g. `tuner1`) and `metric` (e.g. `level`). Events
+(`pituner.event`) are the message text; station down, no audio, EAS and
+service-stopped events go out at severity *warning*, everything else *info*.
+`EAS_DETECT`, `LEVEL_MONITOR`, `RSSI_MONITOR` and `INTERVAL` in `zabbix.conf`
+control what is sent here too, even when Zabbix itself is off. Zabbix's tuner
+discovery list is not sent. Like Zabbix, an unreachable Graylog never affects
+tuning.
+
 ## Email alerts (optional)
 
 Pi-Tuner can email you over SMTP, with or without Zabbix. The installer asks, or
@@ -685,6 +706,7 @@ They rotate at 10 MB (5 compressed copies kept) via `/etc/logrotate.d/pituner`.
   configure.py        # the `pituner config` menu
   icecast.conf        # shared Icecast connection
   zabbix.conf         # Zabbix trapper settings (optional)
+  syslog.conf         # Graylog / syslog output (optional)
   smtp.conf           # SMTP email alerts (optional; holds the password)
   stations/           # one *.conf file per station
     fm-example.conf
