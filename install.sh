@@ -331,6 +331,7 @@ ICECAST_XML="/etc/icecast2/icecast.xml"
 ICECAST_BACKUP="${APP_DIR}/icecast.xml.backup"     # last known-good copy, kept with the app
 ICECAST_DEFAULTS="/etc/default/icecast2"
 ICECAST_CREATED=0
+ICECAST_CHANGED=0
 
 # Write a complete, working icecast.xml (used when the file is missing, e.g. after
 # the old Icecast package was removed/purged). $1 = source password, $2 = admin password.
@@ -417,6 +418,15 @@ ensure_icecast_xml() {
       warn "Could not find <source-password> in icecast.xml; leaving Icecast config unchanged."
     fi
   fi
+  # Debian ships <sources>2</sources>, which would refuse every tuner after the
+  # second. Raise (never lower) the limit on any config we keep or restore.
+  local cur
+  cur="$(sed -n 's|.*<sources>\([0-9][0-9]*\)</sources>.*|\1|p' "${ICECAST_XML}" | head -n1)"
+  if [ -n "${cur}" ] && [ "${cur}" -lt 20 ]; then
+    sed -i 's|<sources>[0-9]*</sources>|<sources>20</sources>|' "${ICECAST_XML}"
+    ICECAST_CHANGED=1
+    ok "Raised Icecast <sources> from ${cur} to 20 so every tuner can stream."
+  fi
   chown root:icecast "${ICECAST_XML}" 2>/dev/null || true
   chmod 640 "${ICECAST_XML}" 2>/dev/null || true
   # Some Debian releases ship /etc/default/icecast2 with ENABLE=false.
@@ -455,7 +465,7 @@ if [ "${KEEP_SETTINGS}" = "1" ]; then
   ADMIN_PASS=""
   ensure_icecast_xml keep
   systemctl enable icecast2 >/dev/null 2>&1 || warn "Could not enable icecast2 (may need manual start)."
-  if [ "${ICECAST_CREATED}" = "1" ]; then
+  if [ "${ICECAST_CREATED}" = "1" ] || [ "${ICECAST_CHANGED}" = "1" ]; then
     systemctl restart icecast2 >/dev/null 2>&1 || warn "Could not restart icecast2."
   else
     systemctl start icecast2 >/dev/null 2>&1 || warn "Could not start icecast2."
