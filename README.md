@@ -635,6 +635,7 @@ For example:
 |----------------------------------|----------------------------------------------------|
 | Station won't start              | `journalctl -u pituner -f`                         |
 | Wrong/no dongle found            | `rtl_test` (check serials)                         |
+| `serial not found` but `rtl_test` shows the right serial | Unplug and replug the dongle, or reboot the Pi (see below) |
 | Config doesn't parse             | `tuner.py --dir /opt/pituner --check`              |
 | No audio / stream missing        | `http://<pi>:8000/status-json.xsl` in a browser    |
 | Changes didn't apply             | `sudo systemctl reload pituner.service`            |
@@ -643,6 +644,16 @@ For example:
 | No recordings                    | `RECORD=true` set and reloaded? `tail /var/log/pituner/recordings.log`; `df -h` |
 | No `RBDS.log`                    | FM station with both `RBDS=true` and `RECORD=true`? Is `redsea` installed? |
 | No alert emails                  | `sudo python3 /opt/pituner/tuner.py test-email --dir /opt/pituner`; `tail /var/log/pituner/email.log` |
+
+**"Serial not found" even though the dongle is plugged in.** If the log says
+`serial_not_found` but `rtl_test` lists the right serial (or you just fixed USB
+permissions, installed the udev rules, or changed a serial), the dongle's USB
+device node probably still has its old permissions, so the `pituner` user can't
+open it. Unplug the dongle and plug it back in, or reboot the Pi. Pi-Tuner then
+recovers on its own (`serial_not_found -> streaming`), or run
+`sudo systemctl restart pituner`. A `usb_open error -3` from `rtl_test` also means
+a permissions problem; install the udev rules (`rtl-sdr.rules`), make sure the
+user is in `plugdev`, and replug.
 
 The service restarts any station whose pipeline dies, backing off between attempts.
 

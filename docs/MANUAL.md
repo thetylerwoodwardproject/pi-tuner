@@ -807,6 +807,7 @@ and `tests/` (`python3 -m unittest discover -s tests`).
 |---------|-------|
 | Station won't start | `journalctl -u pituner -f` |
 | Wrong or no dongle found | `rtl_test` and check serials ([section 6](#6-dongle-serial-numbers)) |
+| `serial not found`, but `rtl_test` shows the right serial | Unplug and replug the dongle, or reboot the Pi (see below) |
 | Config doesn't parse | `sudo pituner check` |
 | No audio, or stream missing | `http://<pi>:8000/status-json.xsl` in a browser |
 | Changes didn't apply | `sudo systemctl reload pituner.service` (restart for Zabbix and email changes) |
@@ -818,6 +819,16 @@ and `tests/` (`python3 -m unittest discover -s tests`).
 | EAS tone email but no decoded message | The header wasn't received cleanly. Improve the antenna or `GAIN`; check `eas-NAME.log` (the tone line says whether a header was decoded) |
 | No EAS emails at all | `ALERT_EAS=true` and email `ENABLED=true` in `smtp.conf`, or `EAS_DETECT=true` with Zabbix enabled; restart the service |
 | Duplicate EAS emails | The same alert is suppressed for 2 minutes; a different message or a repeat after that sends again |
+
+**"Serial not found" even though the dongle is plugged in.** If the log says
+`serial_not_found` but `rtl_test` lists the right serial (or you just fixed USB
+permissions, installed the udev rules, or changed a serial), the dongle's USB
+device node probably still has its old permissions, so the `pituner` user can't
+open it. Unplug the dongle and plug it back in, or reboot the Pi. Pi-Tuner then
+recovers on its own (`serial_not_found -> streaming`), or run
+`sudo systemctl restart pituner`. A `usb_open error -3` from `rtl_test` also means
+a permissions problem; install the udev rules (`rtl-sdr.rules`), make sure the
+user is in `plugdev`, and replug.
 
 The service restarts any station whose pipeline dies, backing off between
 attempts.
